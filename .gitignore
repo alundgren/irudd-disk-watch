@@ -1,0 +1,7 @@
+node_modules/
+out/
+dist/
+scanner/target/
+*.db
+*.db-wal
+*.db-shm
