@@ -59,9 +59,9 @@ export function SettingsView({ disk, scans, scanning, onChanged, onRemoved }: Se
             <li key={scan.id}>
               <span>{formatWhen(scan.startedAt)}</span>
               {scan.status === 'complete' ? (
-                <span className="muted">
+                <span className="muted" title={scan.fallback ?? undefined}>
                   {formatBytes(scan.size)} · {formatCount(scan.files)} files ·{' '}
-                  {((scan.durationMs ?? 0) / 1000).toFixed(1)} s
+                  {((scan.durationMs ?? 0) / 1000).toFixed(1)} s · {scan.method === 'mft' ? 'MFT' : 'folder walk'}
                 </span>
               ) : (
                 <span className="muted">{scan.status}</span>

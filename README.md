@@ -2,7 +2,7 @@
 
 A Windows desktop app that shows where your disk space went, and what changed since the last time you looked.
 
-You choose which drives or folders to track. You start each scan by hand. Nothing runs in the background, so the app costs nothing while you work. Every scan is kept, so you can browse any earlier scan as a full tree. You can also compare any two scans to see which folders grew, which are new, and which are gone.
+You choose which drives or folders to track. One click scans all of them. Nothing runs in the background, so the app costs nothing while you work. Every scan is kept, so you can browse any earlier scan as a full tree. You can also compare any two scans to see which folders grew, which are new, and which are gone.
 
 ## Run it
 
@@ -10,10 +10,10 @@ You need Node 24 and a Rust toolchain with the MSVC target.
 
 ```sh
 npm install
-npm run dev
+npm run app
 ```
 
-`npm run dev` builds the scanner and opens the app. Data is stored in `%APPDATA%\disk-watch\disk-watch.db`.
+`npm run app` builds the scanner and the app, then starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `npm run dev` starts it that way with hot reload. Data is stored in `%APPDATA%\disk-watch\disk-watch.db`.
 
 Other scripts:
 
@@ -25,7 +25,12 @@ If you start the app from a terminal inside another Electron app, unset `ELECTRO
 
 ## How it works
 
-`scanner/` is `dw-scan.exe`, a small Rust program. It walks a tree in parallel, one thread per core, and runs in Windows background mode, which lowers its CPU, disk, and memory priority. It reads file sizes from the directory listing, so it makes no extra system call per file. It skips junctions and symlinks so that nothing is counted twice. It prints the tree as NDJSON.
+`scanner/` is `dw-scan.exe`, a small Rust program that prints a tree as NDJSON. It runs in Windows background mode, which lowers its CPU, disk, and memory priority. It has two ways to build the tree:
+
+- **MFT.** Every file and folder on an NTFS volume has a record in the master file table, holding its names, its parent folder, and its size. The scanner reads the raw table front to back in 16 MiB chunks and builds the tree from the parent links. This needs administrator rights.
+- **Folder walk.** Lists folders in parallel, one thread per core. File sizes come with each listing, so there is no extra system call per file. Junctions and symlinks are skipped so that nothing is counted twice. This works on any file system without administrator rights.
+
+`--method auto`, the default, reads the MFT and falls back to the walk when it can't, for example without administrator rights or on an exFAT drive. Each scan records which method ran, shown in Settings under Scan history.
 
 The Electron main process runs each scan in a worker thread. The worker reads the scanner's output and writes it to SQLite in one transaction. A scan is saved completely or not at all.
 
@@ -33,7 +38,7 @@ The database stores each path once in `node`, as a parent, a name, and a kind. E
 
 ## Numbers
 
-These were measured on this machine's `C:` drive, which has 1.09 million files in 305,000 folders and about 690 GB used.
+These were measured with the folder walk on this machine's `C:` drive, which has 1.09 million files in 305,000 folders and about 690 GB used.
 
 | | Time |
 | --- | --- |
@@ -45,11 +50,12 @@ These were measured on this machine's `C:` drive, which has 1.09 million files i
 
 ## Why every scan is a full scan
 
-Reading the NTFS change journal (USN) or the MFT directly would be faster. Both need the app to run as administrator. Folder timestamps would allow a cheap partial rescan, but they are not reliable. A file that grows in place, such as a render being written, does not update its folder's timestamp, so a partial scan would miss exactly the growth this app exists to show. Because a warm full scan of a million files takes seconds, full scans are the honest default.
+Folder timestamps would allow a cheap partial rescan, but they are not reliable. A file that grows in place, such as a render being written, does not update its folder's timestamp, so a partial scan would miss exactly the growth this app exists to show. Reading the whole MFT costs a few large sequential reads, so a full scan stays cheap.
 
 ## Limits
 
 - Sizes are logical file sizes, as Explorer's "Size" column shows them, not "Size on disk". Compressed files and cloud placeholders such as OneDrive files report their full size.
-- A file with several hard links is counted once for each link.
+- With the MFT, a file with several hard links is counted once, under the first of its names. The other names do not show in the tree. The folder walk cannot tell links apart and counts each one, which can add up to more than the drive holds. On this machine, AI model files hard-linked between two apps made the walk report 825 GB on a drive with 689 GB used.
+- The MFT scan adds NTFS metadata files such as `$MFT` at the root, and includes `System Volume Information`, which holds restore points. The folder walk can't read either. The first MFT scan after earlier walk scans therefore shows them as new.
 - Files smaller than 1 MiB are grouped per folder as "N smaller files", so a diff shows their total change but not which small file changed.
 - Excludes apply from the next scan on. A newly excluded folder shows as gone when you compare a scan from before the exclude with one from after it.

@@ -6,7 +6,7 @@ import { openDb, Store } from './store'
 export interface ScanWorkerData {
   dbFile: string
   scannerExe: string
-  diskId: number
+  diskIds: number[]
   minFileSize: number
 }
 
@@ -19,14 +19,20 @@ port.on('message', (message) => {
 
 const store = new Store(openDb(data.dbFile))
 const post = (event: ScanEvent) => port.postMessage(event)
-const outcome = await runScan({
-  store,
-  scannerExe: data.scannerExe,
-  diskId: data.diskId,
-  minFileSize: data.minFileSize,
-  signal: controller.signal,
-  onProgress: (progress) => post({ type: 'progress', progress }),
-})
+const count = data.diskIds.length
+for (const [index, diskId] of data.diskIds.entries()) {
+  if (controller.signal.aborted) break
+  post({ type: 'progress', progress: { diskId, index, count, phase: 'starting' } })
+  const outcome = await runScan({
+    store,
+    scannerExe: data.scannerExe,
+    diskId,
+    minFileSize: data.minFileSize,
+    signal: controller.signal,
+    onProgress: (progress) => post({ type: 'progress', progress: { diskId, index, count, ...progress } }),
+  })
+  post({ type: 'disk-finished', diskId, status: outcome.status, message: outcome.message })
+}
 store.db.close()
-post({ type: 'finished', diskId: data.diskId, status: outcome.status, message: outcome.message })
+post({ type: 'run-finished' })
 port.close()

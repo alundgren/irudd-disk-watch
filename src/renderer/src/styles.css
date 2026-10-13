@@ -614,3 +614,27 @@ main {
   flex: 2;
   font-variant-numeric: tabular-nums;
 }
+
+.scan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px;
+}
+
+.scan-panel p {
+  margin: 0;
+}
+
+button.link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--link);
+  text-decoration: underline;
+  font-size: inherit;
+}
+
+button.link:hover {
+  background: transparent;
+}

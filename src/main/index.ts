@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { execFile } from 'node:child_process'
 import { statfsSync } from 'node:fs'
 import { join, parse, relative, resolve } from 'node:path'
 import type { Disk, ScanEvent, ScanProgress } from '../shared/types'
@@ -44,23 +45,49 @@ function send(event: ScanEvent) {
   window?.webContents.send('scan-event', event)
 }
 
-function startScan(diskId: number) {
+function startScan() {
   if (activeScan) throw new Error('A scan is already running')
-  const workerData: ScanWorkerData = { dbFile, scannerExe, diskId, minFileSize: MIN_FILE_SIZE }
+  const diskIds = store.listDisks().map((disk) => disk.id)
+  const [first] = diskIds
+  if (first === undefined) return
+  const workerData: ScanWorkerData = { dbFile, scannerExe, diskIds, minFileSize: MIN_FILE_SIZE }
   const scan: ActiveScan = {
     worker: createScanWorker({ workerData }),
-    progress: { phase: 'walking', diskId, files: 0, dirs: 0, bytes: 0 },
+    progress: { diskId: first, index: 0, count: diskIds.length, phase: 'starting' },
   }
   activeScan = scan
   scan.worker.on('message', (event: ScanEvent) => {
     if (event.type === 'progress') scan.progress = event.progress
-    if (event.type === 'finished') activeScan = null
+    if (event.type === 'run-finished') activeScan = null
     send(event)
   })
   scan.worker.on('error', (err) => {
     activeScan = null
-    send({ type: 'finished', diskId, status: 'failed', message: err.message })
+    send({ type: 'disk-finished', diskId: scan.progress.diskId, status: 'failed', message: err.message })
+    send({ type: 'run-finished' })
   })
+}
+
+// S-1-16-12288 is the high integrity level that an elevated process runs at.
+const elevated = new Promise<boolean>((done) =>
+  execFile('whoami', ['/groups'], (err, stdout) => done(!err && stdout.includes('S-1-16-12288'))),
+)
+
+/** Starts an elevated copy of the built app through UAC, then quits this one. */
+async function restartElevated() {
+  if (process.env.ELECTRON_RENDERER_URL) {
+    throw new Error('Restarting as administrator needs the built app. Run "npm run app" instead.')
+  }
+  const quote = (text: string) => `'${text.replaceAll("'", "''")}'`
+  const args = app.isPackaged ? '' : ` -ArgumentList ${quote(`"${app.getAppPath()}"`)}`
+  await new Promise<void>((done, fail) =>
+    execFile(
+      'powershell',
+      ['-NoProfile', '-Command', `Start-Process -FilePath ${quote(process.execPath)}${args} -Verb RunAs`],
+      (err) => (err ? fail(new Error('Windows did not start Disk Watch as administrator.')) : done()),
+    ),
+  )
+  app.quit()
 }
 
 function isInside(root: string, path: string) {
@@ -90,7 +117,7 @@ function registerIpc() {
   ipcMain.handle('setExcludes', (_e, diskId: number, paths: string[]) => store.setExcludes(diskId, paths))
   ipcMain.handle('listScans', (_e, diskId: number) => store.listScans(diskId))
   ipcMain.handle('deleteScan', (_e, scanId: number) => store.deleteScan(scanId))
-  ipcMain.handle('startScan', (_e, diskId: number) => startScan(diskId))
+  ipcMain.handle('startScan', () => startScan())
   ipcMain.handle('cancelScan', () => activeScan?.worker.postMessage('cancel'))
   ipcMain.handle('currentScan', () => activeScan?.progress ?? null)
   ipcMain.handle('children', (_e, scanId: number, nodeId: number) => store.children(scanId, nodeId))
@@ -98,6 +125,8 @@ function registerIpc() {
   ipcMain.handle('changes', (_e, from: number, to: number) => store.changes(from, to))
   ipcMain.handle('nodePath', (_e, nodeId: number) => store.nodePath(nodeId))
   ipcMain.handle('showInExplorer', (_e, path: string) => shell.showItemInFolder(path))
+  ipcMain.handle('isElevated', () => elevated)
+  ipcMain.handle('restartElevated', () => restartElevated())
 }
 
 function createWindow() {

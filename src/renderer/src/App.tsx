@@ -19,6 +19,7 @@ export function App() {
   const [scans, setScans] = useState<ScanSummary[]>([])
   const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [elevated, setElevated] = useState(true)
 
   const disk = disks?.find((d) => d.id === selectedId) ?? disks?.[0] ?? null
 
@@ -30,10 +31,13 @@ export function App() {
   useEffect(() => {
     refresh()
     api.currentScan().then(setProgress)
+    api.isElevated().then(setElevated)
     return api.onScanEvent((event) => {
       if (event.type === 'progress') return setProgress(event.progress)
-      setProgress(null)
-      if (event.status === 'failed') setNotice({ text: `Scan failed: ${event.message}` })
+      if (event.type === 'run-finished') setProgress(null)
+      if (event.type === 'disk-finished' && event.status === 'failed') {
+        setNotice({ text: `A scan failed: ${event.message}` })
+      }
       refresh()
     })
   }, [refresh])
@@ -73,6 +77,9 @@ export function App() {
     <div className="app">
       <nav className="sidebar">
         <h1>Disk Watch</h1>
+        {disks.length > 0 && (
+          <ScanPanel disks={disks} progress={progress} elevated={elevated} onError={(text) => setNotice({ text })} />
+        )}
         <ul className="disks">
           {disks.map((d) => (
             <li key={d.id}>
@@ -88,7 +95,11 @@ export function App() {
                 )}
                 <span className="muted small">
                   {d.capacity ? `${formatBytes(d.capacity.free)} free · ` : ''}
-                  {d.latestScan ? `scanned ${formatWhen(d.latestScan.startedAt)}` : 'never scanned'}
+                  {progress?.diskId === d.id
+                    ? 'scanning now'
+                    : d.latestScan
+                      ? `scanned ${formatWhen(d.latestScan.startedAt)}`
+                      : 'never scanned'}
                 </span>
               </button>
             </li>
@@ -103,7 +114,7 @@ export function App() {
         {!disk ? (
           <div className="welcome">
             <h2>Find out where your disk space went</h2>
-            <p>Pick a drive to track, then scan it. Scan again later to see what grew.</p>
+            <p>Pick the drives to track, then scan them. Scan again later to see what grew.</p>
             <button className="primary" onClick={addDisk}>
               Track a drive or folder
             </button>
@@ -112,7 +123,6 @@ export function App() {
           <>
             <header className="disk-header">
               <h2>{disk.root}</h2>
-              <ScanControl disk={disk} progress={progress} />
             </header>
             {notice && (
               <div className="notice" role="status">
@@ -152,7 +162,7 @@ export function App() {
                 }}
               />
             ) : complete.length === 0 ? (
-              <p className="empty">No scans yet. Scan this drive to see what takes up the space.</p>
+              <p className="empty">No scans yet. Use Scan all drives to see what takes up the space.</p>
             ) : tab === 'space' ? (
               <SpaceView key={`${disk.id}-${complete[0]!.id}`} disk={disk} scans={complete} onExclude={exclude} />
             ) : complete.length < 2 ? (
@@ -167,24 +177,61 @@ export function App() {
   )
 }
 
-function ScanControl({ disk, progress }: { disk: Disk; progress: ScanProgress | null }) {
-  if (!progress) {
+interface ScanPanelProps {
+  disks: Disk[]
+  progress: ScanProgress | null
+  elevated: boolean
+  onError(text: string): void
+}
+
+function ScanPanel({ disks, progress, elevated, onError }: ScanPanelProps) {
+  const restart = () => api.restartElevated().catch((err: Error) => onError(err.message))
+  if (progress) {
+    const root = disks.find((d) => d.id === progress.diskId)?.root ?? ''
     return (
-      <button className="primary" onClick={() => api.startScan(disk.id)}>
-        Scan now
-      </button>
+      <div className="scan-panel" role="status">
+        <div className="scan-progress">
+          <span className="spinner" aria-hidden />
+          <span className="strong">
+            Scanning {root}
+            {progress.count > 1 && (
+              <span className="muted">
+                {' '}
+                · {progress.index + 1} of {progress.count}
+              </span>
+            )}
+          </span>
+        </div>
+        <span className="muted small">{describeProgress(progress)}</span>
+        <button onClick={() => api.cancelScan()}>Cancel</button>
+      </div>
     )
   }
-  if (progress.diskId !== disk.id) return <span className="muted">Another drive is being scanned</span>
   return (
-    <div className="scan-progress">
-      <span className="spinner" aria-hidden />
-      <span>
-        {progress.phase === 'walking'
-          ? `Reading ${formatCount(progress.files)} files · ${formatBytes(progress.bytes)}`
-          : `Saving ${formatCount(progress.rows)} entries`}
-      </span>
-      <button onClick={() => api.cancelScan()}>Cancel</button>
+    <div className="scan-panel">
+      <button className="primary" onClick={() => api.startScan().catch((err: Error) => onError(err.message))}>
+        Scan all drives
+      </button>
+      {!elevated && (
+        <p className="muted small">
+          Disk Watch is not running as administrator, so scans list folders one by one. That is slower and counts
+          hard-linked files once per link.{' '}
+          <button className="link" onClick={restart}>
+            Restart as administrator
+          </button>
+        </p>
+      )}
     </div>
   )
+}
+
+function describeProgress(progress: ScanProgress): string {
+  switch (progress.phase) {
+    case 'starting':
+      return 'Starting…'
+    case 'reading':
+      return `Read ${formatCount(progress.files)} files · ${formatBytes(progress.bytes)}`
+    case 'saving':
+      return `Saving ${formatCount(progress.rows)} entries`
+  }
 }

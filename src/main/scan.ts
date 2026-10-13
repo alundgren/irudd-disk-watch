@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import type { NodeKind, ScanProgress, ScanStatus } from '../shared/types'
+import type { NodeKind, ScanMethod, ScanStatus } from '../shared/types'
 import type { Store } from './store'
 
 /** One NDJSON line printed by dw-scan. Tree lines arrive in pre-order. */
@@ -10,14 +10,23 @@ type ScannerLine =
   | { t: 'file'; parent: number; name: string; size: number }
   | { t: 'rest'; parent: number; size: number; files: number }
   | { t: 'error'; path: string; message: string }
-  | { t: 'done'; size: number; files: number; dirs: number; errors: number; ms: number }
+  | {
+      t: 'done'
+      size: number
+      files: number
+      dirs: number
+      errors: number
+      ms: number
+      method: ScanMethod
+      fallback: string | null
+    }
 
 export interface ScanOptions {
   store: Store
   scannerExe: string
   diskId: number
   minFileSize: number
-  onProgress(progress: ScanProgress): void
+  onProgress(progress: DiskProgress): void
   signal: AbortSignal
 }
 
@@ -26,6 +35,9 @@ export interface ScanOutcome {
   status: Exclude<ScanStatus, 'running'>
   message?: string
 }
+
+export type DiskProgress =
+  { phase: 'reading'; files: number; dirs: number; bytes: number } | { phase: 'saving'; rows: number }
 
 const SAVE_PROGRESS_EVERY = 25_000
 
@@ -108,10 +120,11 @@ class Ingest {
   finish(done: Extract<ScannerLine, { t: 'done' }>): void {
     this.store.db
       .prepare(
-        `UPDATE scan SET status = 'complete', finished_at = ?, size = ?, files = ?, dirs = ?, errors = ?, duration_ms = ?
+        `UPDATE scan SET status = 'complete', finished_at = ?, size = ?, files = ?, dirs = ?, errors = ?,
+           duration_ms = ?, method = ?, fallback = ?
          WHERE id = ?`,
       )
-      .run(Date.now(), done.size, done.files, done.dirs, done.errors, done.ms, this.scanId)
+      .run(Date.now(), done.size, done.files, done.dirs, done.errors, done.ms, done.method, done.fallback, this.scanId)
   }
 }
 
@@ -140,7 +153,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     for await (const text of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
       const line = JSON.parse(text) as ScannerLine
       if (line.t === 'progress') {
-        options.onProgress({ phase: 'walking', diskId, files: line.files, dirs: line.dirs, bytes: line.bytes })
+        options.onProgress({ phase: 'reading', files: line.files, dirs: line.dirs, bytes: line.bytes })
         continue
       }
       if (line.t === 'done') {
@@ -152,7 +165,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         inTransaction = true
       }
       ingest.handle(line)
-      if (ingest.rows % SAVE_PROGRESS_EVERY === 0) options.onProgress({ phase: 'saving', diskId, rows: ingest.rows })
+      if (ingest.rows % SAVE_PROGRESS_EVERY === 0) options.onProgress({ phase: 'saving', rows: ingest.rows })
     }
     const exit = await exited
     if (signal.aborted) throw new ScanCancelled()

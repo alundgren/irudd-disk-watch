@@ -22,6 +22,8 @@ const api: DiskWatchApi = {
   changes: invoke('changes'),
   nodePath: invoke('nodePath'),
   showInExplorer: invoke('showInExplorer'),
+  isElevated: invoke('isElevated'),
+  restartElevated: invoke('restartElevated'),
   onScanEvent(listener) {
     const handler = (_e: IpcRendererEvent, event: ScanEvent) => listener(event)
     ipcRenderer.on('scan-event', handler)

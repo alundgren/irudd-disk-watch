@@ -1,5 +1,14 @@
 import { DatabaseSync } from 'node:sqlite'
-import type { DiffRow, Hotspot, NodeKind, ScanChanges, ScanStatus, ScanSummary, TreeRow } from '../shared/types'
+import type {
+  DiffRow,
+  Hotspot,
+  NodeKind,
+  ScanChanges,
+  ScanMethod,
+  ScanStatus,
+  ScanSummary,
+  TreeRow,
+} from '../shared/types'
 
 // Paths are interned once in `node` and shared by every scan. A scan stores one
 // `entry` per dir, per file of at least --min-file-size, and per dir's leftover
@@ -51,12 +60,23 @@ CREATE TABLE IF NOT EXISTS scan_error (
 );
 `
 
+// Applied in order after SCHEMA. PRAGMA user_version counts how many have run.
+const MIGRATIONS = ['ALTER TABLE scan ADD COLUMN method TEXT; ALTER TABLE scan ADD COLUMN fallback TEXT;']
+
 export function openDb(file: string): DatabaseSync {
   const db = new DatabaseSync(file)
   db.exec(
     'PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;',
   )
   db.exec(SCHEMA)
+  const { user_version: applied } = db.prepare('PRAGMA user_version').get() as { user_version: number }
+  for (const [index, migration] of MIGRATIONS.entries()) {
+    if (index < applied) continue
+    db.exec('BEGIN')
+    db.exec(migration)
+    db.exec(`PRAGMA user_version = ${index + 1}`)
+    db.exec('COMMIT')
+  }
   return db
 }
 
@@ -71,6 +91,8 @@ interface ScanRow {
   dirs: number
   errors: number
   duration_ms: number | null
+  method: ScanMethod | null
+  fallback: string | null
 }
 
 function toScan(row: ScanRow): ScanSummary {
@@ -85,6 +107,8 @@ function toScan(row: ScanRow): ScanSummary {
     dirs: row.dirs,
     errors: row.errors,
     durationMs: row.duration_ms,
+    method: row.method,
+    fallback: row.fallback,
   }
 }
 

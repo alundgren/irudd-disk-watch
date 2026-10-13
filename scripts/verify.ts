@@ -11,6 +11,8 @@ const MB = 1024 * 1024
 const shots = process.argv[2] ?? mkdtempSync(join(tmpdir(), 'dw-shots-'))
 const userData = mkdtempSync(join(tmpdir(), 'dw-userdata-'))
 const root = mkdtempSync(join(tmpdir(), 'dw-fixture-'))
+const second = mkdtempSync(join(tmpdir(), 'dw-second-'))
+writeFileSync(join(second, 'render.mp4'), Buffer.alloc(3 * MB))
 
 function write(path: string, bytes: number) {
   mkdirSync(join(root, path, '..'), { recursive: true })
@@ -26,6 +28,7 @@ write('Temp/scratch.bin', 30 * MB)
 
 const store = new Store(openDb(join(userData, 'disk-watch.db')))
 store.setExcludes(store.addDisk(root).id, [join(root, 'Temp')])
+store.addDisk(second)
 store.db.close()
 
 // Set when this runs from inside another Electron app; it would start Electron as plain Node.
@@ -41,13 +44,18 @@ try {
   await page.setViewportSize({ width: 1280, height: 820 })
 
   async function scan(page: Page) {
-    await page.getByRole('button', { name: 'Scan now' }).click()
-    await page.getByRole('button', { name: 'Scan now' }).waitFor({ timeout: 60_000 })
+    await page.getByRole('button', { name: 'Scan all drives' }).click()
+    await page.getByRole('button', { name: 'Scan all drives' }).waitFor({ timeout: 60_000 })
   }
 
   await page.getByText('No scans yet').waitFor()
   await page.screenshot({ path: join(shots, '1-empty.png') })
   await scan(page)
+  await page
+    .getByText(/scanned \d/)
+    .nth(1)
+    .waitFor({ timeout: 5000 })
+  assert.equal(await page.getByText('never scanned').count(), 0, 'one click scans every tracked folder')
 
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day1/ }).click()
@@ -87,5 +95,6 @@ try {
 } finally {
   await app.close()
   rmSync(root, { recursive: true, force: true })
+  rmSync(second, { recursive: true, force: true })
   rmSync(userData, { recursive: true, force: true })
 }

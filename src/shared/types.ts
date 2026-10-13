@@ -2,6 +2,9 @@ export type NodeKind = 'dir' | 'file' | 'rest'
 
 export type ScanStatus = 'running' | 'complete' | 'failed' | 'cancelled'
 
+/** `mft` reads the NTFS master file table; `walk` lists folders one by one. */
+export type ScanMethod = 'mft' | 'walk'
+
 export interface ScanSummary {
   id: number
   diskId: number
@@ -13,6 +16,9 @@ export interface ScanSummary {
   dirs: number
   errors: number
   durationMs: number | null
+  method: ScanMethod | null
+  /** Why a scan fell back to walking folders instead of reading the MFT. */
+  fallback: string | null
 }
 
 export interface Disk {
@@ -58,13 +64,17 @@ export interface ScanChanges {
   newFolders: Hotspot[]
 }
 
-export type ScanProgress =
-  | { phase: 'walking'; diskId: number; files: number; dirs: number; bytes: number }
-  | { phase: 'saving'; diskId: number; rows: number }
+/** One click scans every tracked disk in turn. `index` counts from 0. */
+export type ScanProgress = { diskId: number; index: number; count: number } & (
+  | { phase: 'starting' }
+  | { phase: 'reading'; files: number; dirs: number; bytes: number }
+  | { phase: 'saving'; rows: number }
+)
 
 export type ScanEvent =
   | { type: 'progress'; progress: ScanProgress }
-  | { type: 'finished'; diskId: number; status: Exclude<ScanStatus, 'running'>; message?: string }
+  | { type: 'disk-finished'; diskId: number; status: Exclude<ScanStatus, 'running'>; message?: string }
+  | { type: 'run-finished' }
 
 export interface DiskWatchApi {
   listDisks(): Promise<Disk[]>
@@ -74,7 +84,7 @@ export interface DiskWatchApi {
   setExcludes(diskId: number, paths: string[]): Promise<void>
   listScans(diskId: number): Promise<ScanSummary[]>
   deleteScan(scanId: number): Promise<void>
-  startScan(diskId: number): Promise<void>
+  startScan(): Promise<void>
   cancelScan(): Promise<void>
   currentScan(): Promise<ScanProgress | null>
   onScanEvent(listener: (event: ScanEvent) => void): () => void
@@ -83,4 +93,6 @@ export interface DiskWatchApi {
   changes(fromScan: number, toScan: number): Promise<ScanChanges>
   nodePath(nodeId: number): Promise<string>
   showInExplorer(path: string): Promise<void>
+  isElevated(): Promise<boolean>
+  restartElevated(): Promise<void>
 }

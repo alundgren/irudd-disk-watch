@@ -14,7 +14,8 @@
     "test": "npm run scanner && vitest run",
     "format": "prettier --write src scripts electron.vite.config.ts",
     "verify": "npm run build && node scripts/verify.ts",
-    "bench": "node scripts/bench.ts"
+    "bench": "node scripts/bench.ts",
+    "app": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-admin.ps1"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
