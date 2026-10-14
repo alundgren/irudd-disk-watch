@@ -27,6 +27,7 @@ const api: DiskWatchApi = {
   nodePath: invoke('nodePath'),
   executeDelete: invoke('executeDelete'),
   stageDelete: invoke('stageDelete'),
+  copyText: invoke('copyText'),
   showInExplorer: invoke('showInExplorer'),
   isElevated: invoke('isElevated'),
   restartElevated: invoke('restartElevated'),

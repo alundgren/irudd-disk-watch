@@ -118,9 +118,31 @@ export interface StagedDelete {
   files: number
 }
 
+export interface LockProcess {
+  pid: number
+  processName: string | null
+  programName: string | null
+  executablePath: string | null
+  serviceName: string | null
+  source: 'restart_manager' | 'open_handle'
+  note: string | null
+}
+
+export interface DeleteFailure {
+  path: string
+  message: string
+  failedPath?: string
+  errorCode?: number | null
+  lockInfo?: {
+    status: 'found' | 'none' | 'unavailable' | 'not_checked'
+    processes: LockProcess[]
+    note: string
+  }
+}
+
 export interface DeleteResult {
   deleted: string[]
-  failed: { path: string; message: string }[]
+  failed: DeleteFailure[]
 }
 
 /** One click scans every tracked disk in turn. `index` counts from 0. */
@@ -157,6 +179,7 @@ export interface DiskWatchApi {
   nodePath(nodeId: number): Promise<string>
   stageDelete(diskId: number, nodeId: number): Promise<StagedDelete>
   executeDelete(diskId: number, targets: StagedDelete[]): Promise<DeleteResult>
+  copyText(text: string): Promise<void>
   showInExplorer(path: string): Promise<void>
   isElevated(): Promise<boolean>
   restartElevated(): Promise<void>

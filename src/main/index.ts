@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { execFile } from 'node:child_process'
 import { statfsSync } from 'node:fs'
 import { join, parse, relative, resolve } from 'node:path'
@@ -172,6 +172,10 @@ function registerIpc() {
   ipcMain.handle('compare', (_e, from: number, to: number, revision: number) => store.compare(from, to, revision))
   ipcMain.handle('nodePath', (_e, nodeId: number) => store.nodePath(nodeId))
   ipcMain.handle('stageDelete', (_e, diskId: number, nodeId: number) => store.stageDelete(diskId, nodeId))
+  ipcMain.handle('copyText', (_e, text: string) => {
+    if (typeof text !== 'string') throw new Error('Invalid text to copy.')
+    return clipboard.writeText(text)
+  })
   ipcMain.handle('executeDelete', async (_e, diskId: number, targets: StagedDelete[]) => {
     if (activeScan) throw new Error('Wait for the scan to finish before deleting.')
     if (activeDelete) throw new Error('A deletion is already running.')

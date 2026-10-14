@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron, type Page } from 'playwright-core'
 import { openDb, Store } from '../src/main/store.ts'
+import { holdFile } from './fixtureLock.ts'
 
 const MB = 1024 * 1024
 const shots = process.argv[2] ?? mkdtempSync(join(tmpdir(), 'dw-shots-'))
@@ -774,7 +775,10 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Scan all drives', exact: true }).isDisabled(), true)
   await diskButton(second).click()
   await page.locator('.disk-header h2').getByText(second, { exact: true }).waitFor()
-  await page.getByText(/Failed on/).waitFor()
+  const failureDialog = page.getByRole('dialog', { name: 'Some paths could not be deleted' })
+  await failureDialog.waitFor()
+  assert.match(await failureDialog.innerText(), /type changed/)
+  await failureDialog.getByRole('button', { name: 'Close', exact: true }).click()
   assert.equal(existsSync(join(root, 'Footage', 'day2')), false, 'successful queued folder is deleted')
   assert.equal(existsSync(join(replaced, 'keep.txt')), true, 'file-to-folder replacement remains untouched')
   assert.equal(await summary.count(), 0, 'completion does not move the old queue onto the selected disk')
@@ -802,6 +806,162 @@ try {
     'captured tree remains intact after deletion',
   )
   await page.screenshot({ path: join(shots, '13-partial-delete.png') })
+
+  // Real lock-owner detection and copying, including a path wider than the popup.
+  const longFolder = join(
+    'Projects',
+    'exports',
+    'session-' + 'render-output-'.repeat(6),
+    'camera-' + 'footage-'.repeat(4),
+  )
+  const longFile = join(longFolder, 'locked-å-日本語.mov')
+  write(longFile, 2 * MB)
+  write(join(longFolder, 'good.mov'), MB)
+  await scan(page)
+  await summary.getByRole('button', { name: 'Clear', exact: true }).click()
+  await expand(/Projects/)
+  await expand(/exports/)
+  await expand(/session-render/)
+  const camera = page.getByRole('treeitem', { name: /camera-footage/ })
+  await camera.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Queue for deletion', exact: true }).click()
+  const lockedPath = join(root, longFile)
+  const before = await page.evaluate(async () => (await window.diskWatch.listDisks()).map((disk) => disk.latestScan))
+  await app.evaluate(async ({ clipboard, ClipboardItem }) => {
+    const snapshot = async () => {
+      const items = await clipboard.read()
+      return Promise.all(
+        items
+          .filter((item) => item.types.length > 0)
+          .map(
+            async (item) =>
+              new ClipboardItem(
+                Object.fromEntries(await Promise.all(item.types.map(async (type) => [type, await item.getType(type)]))),
+              ),
+          ),
+      )
+    }
+    const saved = await snapshot()
+    ;(globalThis as unknown as { fixtureClipboard: Electron.ClipboardItem[] }).fixtureClipboard = saved
+    try {
+      clipboard.clear()
+      if ((await snapshot()).length !== 0) throw new Error('Empty clipboard snapshot should contain no entries.')
+    } finally {
+      if (saved.length) await clipboard.write(saved)
+      else clipboard.clear()
+    }
+  })
+  const lock = await holdFile(lockedPath)
+  try {
+    await summary.getByRole('button', { name: 'Execute delete', exact: true }).click()
+    await failureDialog.waitFor()
+    assert.match(await failureDialog.innerText(), /powershell\.exe/i)
+    assert.match(await failureDialog.innerText(), new RegExp(String(lock.pid)))
+    assert.match(await failureDialog.innerText(), /Program name/)
+    const failedPath = failureDialog
+      .locator('.failure-field')
+      .filter({ hasText: 'Failed operation path' })
+      .locator('dd')
+    assert.equal(await failedPath.innerText(), lockedPath)
+    assert.equal(await failedPath.evaluate((element) => getComputedStyle(element).userSelect), 'text')
+    await failureDialog.getByRole('button', { name: 'Copy process id', exact: true }).click()
+    await failureDialog.getByRole('status').getByText('Process ID copied.', { exact: true }).waitFor()
+    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), String(lock.pid))
+    await failureDialog.getByRole('button', { name: 'Copy failed operation path', exact: true }).click()
+    await failureDialog.getByRole('status').getByText('Failed operation path copied.', { exact: true }).waitFor()
+    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), lockedPath)
+    await failureDialog.getByRole('button', { name: 'Copy report', exact: true }).click()
+    await failureDialog.getByRole('status').getByText('Report copied.', { exact: true }).waitFor()
+    const report = await app.evaluate(({ clipboard }) => clipboard.readText())
+    assert.ok(report.includes(`Process ID: ${lock.pid}`) && report.includes(lockedPath))
+    assert.ok(report.includes('One failed operation is shown per queued path.'))
+    const bounds = await failureDialog.boundingBox()
+    assert.ok(bounds && bounds.width >= 1000 && bounds.height <= 820 * 0.9 + 2)
+    assert.equal(await failureDialog.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+    await page.screenshot({ path: join(shots, '14-lock-owner-popup.png') })
+    await page.keyboard.press('Escape')
+    await failureDialog.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'View details', exact: true }).click()
+    await failureDialog.waitFor()
+    await page.setViewportSize({ width: 760, height: 600 })
+    assert.equal(await failureDialog.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+    await page.screenshot({ path: join(shots, '15-lock-owner-small-window.png') })
+    await failureDialog.getByRole('button', { name: 'Close', exact: true }).click()
+    assert.equal(
+      await page
+        .getByRole('button', { name: 'View details', exact: true })
+        .evaluate((element) => document.activeElement === element),
+      true,
+    )
+    assert.equal(existsSync(join(root, longFolder, 'good.mov')), false)
+    assert.equal(existsSync(lockedPath), true)
+    assert.deepEqual(
+      await page.evaluate(async () => (await window.diskWatch.listDisks()).map((disk) => disk.latestScan)),
+      before,
+    )
+  } finally {
+    await lock.release()
+    await app.evaluate(async ({ clipboard }) => {
+      const saved = (globalThis as unknown as { fixtureClipboard: Electron.ClipboardItem[] }).fixtureClipboard
+      if (saved.length) await clipboard.write(saved)
+      else clipboard.clear()
+    })
+  }
+  await page.setViewportSize({ width: 1280, height: 820 })
+  await summary.getByRole('button', { name: 'Execute delete', exact: true }).click()
+  await page.getByText(/Removed 1 queued path\./).waitFor()
+  assert.equal(existsSync(join(root, longFolder)), false, 'retry works after the owner releases its handle')
+
+  // Multiple failures, unavailable metadata and a clipboard rejection stay readable.
+  await queue(/edit\.prproj/)
+  await queue(/cache/)
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('executeDelete')
+    ipcMain.handle('executeDelete', (_event, _disk, targets: { path: string }[]) => ({
+      deleted: [],
+      failed: targets.map((target, index) => ({
+        path: target.path,
+        failedPath: target.path,
+        message: 'Access denied.',
+        errorCode: 5,
+        lockInfo:
+          index === 0
+            ? {
+                status: 'found',
+                note: 'Fixture lookup snapshot with protected metadata.',
+                processes: [
+                  {
+                    pid: 4242,
+                    programName: null,
+                    processName: null,
+                    executablePath: null,
+                    serviceName: 'FixtureService',
+                    source: 'open_handle',
+                    note: 'Executable details are unavailable.',
+                  },
+                ],
+              }
+            : { status: 'unavailable', processes: [], note: 'This file system does not support owner lookup.' },
+      })),
+    }))
+    ipcMain.removeHandler('copyText')
+    ipcMain.handle('copyText', () => {
+      throw new Error('Fixture clipboard rejection.')
+    })
+  })
+  await summary.getByRole('button', { name: 'Execute delete', exact: true }).click()
+  await failureDialog.waitFor()
+  assert.equal(await failureDialog.getByRole('region', { name: /Failed path/ }).count(), 2)
+  assert.equal(await failureDialog.getByRole('button', { name: 'Copy executable path', exact: true }).count(), 0)
+  await failureDialog.getByRole('button', { name: 'Copy process id', exact: true }).click()
+  await failureDialog
+    .getByRole('status')
+    .getByText('Could not copy. Select the value and press Ctrl+C.', { exact: true })
+    .waitFor()
+  assert.match(await failureDialog.innerText(), /Windows could not identify/)
+  assert.match(await failureDialog.innerText(), /FixtureService/)
+  await page.screenshot({ path: join(shots, '16-lock-owner-unavailable.png') })
+  await failureDialog.getByRole('button', { name: 'Close', exact: true }).click()
   console.log(`ok, screenshots in ${shots}`)
 } catch (error) {
   const failedPage = await app.firstWindow()
@@ -810,7 +970,7 @@ try {
   throw error
 } finally {
   await app.close()
-  rmSync(root, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   rmSync(second, { recursive: true, force: true })
   rmSync(userData, { recursive: true, force: true })
 }

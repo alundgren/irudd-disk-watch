@@ -9,6 +9,7 @@
 //! `--method auto` reads the NTFS MFT when it can and falls back to listing folders.
 
 mod delete;
+mod locks;
 mod mft;
 mod tree;
 mod walk;

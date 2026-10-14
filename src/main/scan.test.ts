@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vite-plus/test'
 import { executeDelete, runScan } from './scan'
 import { openDb, Store } from './store'
+import { holdFile } from '../../scripts/fixtureLock.ts'
 
 vi.mock('node:child_process', { spy: true })
 
@@ -256,7 +257,14 @@ test('deletion refuses ancestor junction traversal, unlinks leaf junctions and p
   try {
     const result = await executeDelete(store, scannerExe, disk.id, [through, leaf, tree])
     expect(result.deleted).toEqual([leaf.path, tree.path])
-    expect(result.failed).toEqual([{ path: through.path, message: expect.stringMatching(/reparse/) }])
+    expect(result.failed).toMatchObject([
+      {
+        path: through.path,
+        message: expect.stringMatching(/reparse/),
+        failedPath: join(root, 'footage', 'alias'),
+        lockInfo: { status: 'not_checked' },
+      },
+    ])
     expect(readFileSync(join(outside, 'victim', 'sentinel.txt'), 'utf8')).toBe('outside remains')
     expect(existsSync(leaf.path)).toBe(false)
     expect(existsSync(tree.path)).toBe(false)
@@ -283,4 +291,106 @@ test('deletion rejects stale scans before any filesystem work and preserves file
   expect(result.deleted).toEqual([])
   expect(result.failed[0]).toMatchObject({ path: current.path, message: expect.stringMatching(/type changed/) })
   expect(readFileSync(join(current.path, 'keep.txt'), 'utf8')).toBe('new folder contents')
+})
+
+test('deletion preserves the locked child path and identifies its process across the scanner boundary', async () => {
+  const disk = store.addDisk(root)
+  write('footage/exports/locked.txt', 2000)
+  write('footage/exports/good.txt', 2000)
+  const initial = await scan(disk.id)
+  const footage = store.children(initial.scanId, disk.rootNode).find((row) => row.name === 'footage')!
+  const folder = store.children(initial.scanId, footage.nodeId).find((row) => row.name === 'exports')!
+  const target = store.stageDelete(disk.id, folder.nodeId)
+  const locked = join(root, 'footage', 'exports', 'locked.txt')
+  const lock = await holdFile(locked)
+  const captured = store.db.prepare('SELECT * FROM entry ORDER BY scan_id,node_id').all()
+  try {
+    const result = await executeDelete(store, scannerExe, disk.id, [target])
+    expect(result.deleted).toEqual([])
+    expect(result.failed[0]).toMatchObject({
+      path: target.path,
+      failedPath: locked,
+      errorCode: 32,
+      lockInfo: {
+        status: 'found',
+        processes: expect.arrayContaining([
+          expect.objectContaining({
+            pid: lock.pid,
+            processName: 'powershell.exe',
+            executablePath: expect.stringMatching(/powershell\.exe$/i),
+            programName: expect.any(String),
+          }),
+        ]),
+      },
+    })
+    expect(existsSync(join(root, 'footage', 'exports', 'good.txt'))).toBe(false)
+    expect(existsSync(locked)).toBe(true)
+    expect(store.db.prepare('SELECT * FROM entry ORDER BY scan_id,node_id').all()).toEqual(captured)
+  } finally {
+    await lock.release()
+  }
+  expect((await executeDelete(store, scannerExe, disk.id, [target])).deleted).toEqual([target.path])
+})
+
+test('deletion validates diagnostic metadata and supports older scanner failures', async () => {
+  const disk = store.addDisk(root)
+  const initial = await scan(disk.id)
+  const footage = store.children(initial.scanId, disk.rootNode).find((row) => row.name === 'footage')!
+  const file = store.children(initial.scanId, footage.nodeId).find((row) => row.name === 'a.mov')!
+  const target = store.stageDelete(disk.id, file.nodeId)
+  const actualSpawn = spawn
+  const reply = (failure: unknown) => {
+    const json = JSON.stringify({ deleted: [], failed: [failure] })
+    vi.mocked(spawn).mockImplementationOnce(() =>
+      actualSpawn(
+        process.execPath,
+        [
+          '-e',
+          'process.stdin.resume(); process.stdin.on("end",()=>{console.log(process.argv[1]);process.exitCode=1})',
+          json,
+        ],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+      ),
+    )
+  }
+  const failure = { path: target.path, message: 'Locked' }
+  reply(failure)
+  expect((await executeDelete(store, scannerExe, disk.id, [target])).failed).toEqual([failure])
+  reply({
+    ...failure,
+    failedPath: root,
+    errorCode: 32,
+    lockInfo: { status: 'none', processes: [], note: 'Owner exited.' },
+  })
+  expect((await executeDelete(store, scannerExe, disk.id, [target])).failed[0]?.failedPath).toBe(root)
+  for (const extra of [
+    { failedPath: join(root, 'cache', 'blob.bin') },
+    { errorCode: '32' },
+    { lockInfo: { status: 'found', processes: [], note: 'Invalid' } },
+    { lockInfo: { status: ['none'], processes: [], note: 'Invalid' } },
+    {
+      lockInfo: {
+        status: 'found',
+        note: 'Invalid',
+        processes: [
+          {
+            pid: 12,
+            source: ['restart_manager'],
+            processName: null,
+            programName: null,
+            executablePath: null,
+            serviceName: null,
+            note: null,
+          },
+        ],
+      },
+    },
+    { lockInfo: { status: 'none', processes: [{ pid: -1 }], note: 'Invalid' } },
+    {
+      lockInfo: { status: 'found', processes: [{ pid: 12, source: 'open_handle', processName: 42 }], note: 'Invalid' },
+    },
+  ]) {
+    reply({ ...failure, ...extra })
+    await expect(executeDelete(store, scannerExe, disk.id, [target])).rejects.toThrow(/Invalid/)
+  }
 })
