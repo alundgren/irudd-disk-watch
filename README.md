@@ -29,7 +29,7 @@ The install script also accepts an absolute `-InstallDirectory`. `vp run verify:
 
 To run from source:
 
-Install [Vite+](https://viteplus.dev/guide/installation) and a Rust toolchain with the MSVC target. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
+Install [Vite+](https://viteplus.dev/guide/global-cli) and a Rust toolchain with the MSVC target. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
 
 `vp install --frozen-lockfile` installs the committed pnpm lockfile and downloads the Electron development runtime through the project's postinstall hook. The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
 
