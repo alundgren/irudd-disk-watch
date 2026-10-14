@@ -18,7 +18,7 @@ if ($running) { throw 'Close the installed Disk Watch first, then run the instal
 if (-not $SkipBuild) {
   Push-Location $projectRoot
   try {
-    & npm.cmd run dist:win
+    & vp run dist:win
     if ($LASTEXITCODE -ne 0) { throw "Windows build failed with exit code $LASTEXITCODE." }
   } finally {
     Pop-Location
