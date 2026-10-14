@@ -323,19 +323,20 @@ impl Tree<'_> {
         self.edges[start..].iter().take_while(move |&&(p, _)| p as usize == dir).map(|&(_, c)| c as usize)
     }
 
-    fn child_dir(&self, dir: usize, name: &str) -> Option<usize> {
+    fn child(&self, dir: usize, name: &str) -> Option<usize> {
         let name = name.to_lowercase();
-        self.children(dir).find(|&c| {
-            self.table.is_dir(c) && self.table.name[c].as_deref().is_some_and(|n| n.to_lowercase() == name)
-        })
+        self.children(dir).find(|&c| self.table.name[c].as_deref().is_some_and(|n| n.to_lowercase() == name))
     }
 
-    /// Follows the folder names below the volume root. Returns None if a folder is missing.
+    /// Follows names below the volume root; only the final component may be a file.
     fn resolve(&self, path: &Path) -> Option<usize> {
         let mut at = ROOT_RECORD;
         for component in path.components() {
             if let Component::Normal(name) = component {
-                at = self.child_dir(at, &name.to_string_lossy())?;
+                if !self.table.is_dir(at) {
+                    return None;
+                }
+                at = self.child(at, &name.to_string_lossy())?;
             }
         }
         Some(at)
@@ -344,11 +345,12 @@ impl Tree<'_> {
     fn build(&self, dir: usize, name: String) -> Dir {
         let mut out = Dir::new(name);
         for child in self.children(dir) {
+            if self.excluded.contains(&child) {
+                continue;
+            }
             let name = self.table.name[child].as_deref().unwrap_or_default().to_string();
             if self.table.is_dir(child) {
-                if !self.excluded.contains(&child) {
-                    out.add_subdir(self.build(child, name));
-                }
+                out.add_subdir(self.build(child, name));
             } else {
                 out.add_file(name, self.table.size[child], self.min_file_size);
             }
@@ -391,7 +393,10 @@ pub fn scan(root: &Path, excludes: &[String], min_file_size: u64, counters: &Cou
             }
         }
     }
-    let start = tree.resolve(root).ok_or_else(|| format!("{} was not found in the MFT", root.display()))?;
+    let start = tree
+        .resolve(root)
+        .filter(|&record| table.is_dir(record))
+        .ok_or_else(|| format!("{} was not found as a folder in the MFT", root.display()))?;
     Ok(tree.build(start, root.to_string_lossy().into_owned()))
 }
 
@@ -493,5 +498,41 @@ mod tests {
         let mut table = Table::new(1);
         table.add_record(0, &mut rec, &Counters::default());
         assert_eq!(table.flags[0], 0);
+    }
+
+    #[test]
+    fn excludes_exact_files_and_folder_subtrees_from_mft_totals() {
+        let mut table = Table::new(12);
+        table.flags[ROOT_RECORD] = IN_USE | IS_DIR;
+        let mut edges = Vec::new();
+        for (id, parent, name, size, is_dir) in [
+            (6, ROOT_RECORD, "hiberfil.sys", 100, false),
+            (7, ROOT_RECORD, "hiberfil.sys.backup", 20, false),
+            (8, ROOT_RECORD, "Cache", 0, true),
+            (9, 8, "swapfile.sys", 30, false),
+            (10, ROOT_RECORD, "Media", 0, true),
+            (11, 10, "keep.bin", 40, false),
+        ] {
+            table.flags[id] = IN_USE | if is_dir { IS_DIR } else { 0 };
+            table.name[id] = Some(name.into());
+            table.size[id] = size;
+            edges.push((parent as u32, id as u32));
+        }
+        edges.sort_unstable();
+        let mut tree = Tree { table: &table, edges, excluded: HashSet::new(), min_file_size: 25 };
+        assert_eq!(tree.resolve(Path::new("C:\\")), Some(ROOT_RECORD));
+        assert_eq!(tree.resolve(Path::new("C:/HIBERFIL.SYS")), Some(6));
+        assert_eq!(tree.resolve(Path::new("C:/hiberfil.sys/child")), None);
+        assert_eq!(tree.resolve(Path::new("C:/hiberfil")), None);
+        let before = tree.build(ROOT_RECORD, "C:\\".into());
+        assert_eq!((before.size, before.files), (190, 4));
+        for path in ["C:/HIBERFIL.SYS", "C:/cache/SWAPFILE.sys", "C:/media"] {
+            tree.excluded.insert(tree.resolve(Path::new(path)).unwrap());
+        }
+        let after = tree.build(ROOT_RECORD, "C:\\".into());
+        assert_eq!((after.size, after.files, after.rest_size, after.rest_files), (20, 1, 20, 1));
+        assert!(after.big_files.is_empty());
+        assert_eq!(after.subdirs.len(), 1);
+        assert_eq!((after.subdirs[0].name.as_str(), after.subdirs[0].size), ("Cache", 0));
     }
 }

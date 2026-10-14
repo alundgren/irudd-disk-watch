@@ -366,7 +366,7 @@ export function App() {
     if (!menu) return
     const { owner, target } = menu
     setMenu((current) => (current === menu ? null : current))
-    if (target.kind !== 'dir' || !ownsHide(owner) || request.current !== owner.request) return
+    if (!target.kind || !ownsHide(owner) || request.current !== owner.request) return
     try {
       const path = target.path ?? (await api.nodePath(target.nodeId))
       if (ownsHide(owner) && request.current === owner.request) await exclude(owner.diskId, path)
@@ -593,7 +593,7 @@ export function App() {
           <button role="menuitem" autoFocus onClick={openHide}>
             Hide…
           </button>
-          {menu.target.kind === 'dir' && (
+          {menu.target.kind && (
             <button role="menuitem" onClick={() => void excludeFromMenu()}>
               Exclude
             </button>

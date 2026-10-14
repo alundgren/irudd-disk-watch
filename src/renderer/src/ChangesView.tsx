@@ -1,7 +1,7 @@
 import { useCallback, useState, type MouseEvent } from 'react'
 import { canDeletePath } from '../../shared/paths'
 import type { Comparison, DiffRow, Disk, Hotspot, NodeKind, ScanSummary, StagedDelete } from '../../shared/types'
-import { api, formatBytes, formatCount, formatDelta } from './api'
+import { api, formatBytes, formatDelta } from './api'
 import { LazyTree } from './LazyTree'
 import { NodeActions } from './NodeActions'
 import { ScanPicker } from './ScanPicker'
@@ -149,8 +149,7 @@ export function ChangesView({
           const change = delta(row)
           const status = row.before === null ? 'new' : row.after === null ? 'gone' : null
           const isStaged = stagedIds.has(row.nodeId)
-          const name =
-            row.kind === 'rest' ? `${formatCount(row.after?.files ?? row.before?.files ?? 0)} smaller files` : row.name
+          const name = row.name
           return {
             name: (
               <span
@@ -176,7 +175,6 @@ export function ChangesView({
                     kind={row.kind}
                     size={row.after?.size ?? 0}
                     files={row.after?.files ?? 0}
-                    canExclude={row.kind === 'dir'}
                     canDelete={depth >= 1}
                     staged={isStaged}
                     onExclude={onExclude}
@@ -280,7 +278,6 @@ function SummarizeHotspotList({
                     kind="dir"
                     size={item.after}
                     files={0}
-                    canExclude
                     canDelete={deletable}
                     staged={isStaged}
                     onExclude={onExclude}

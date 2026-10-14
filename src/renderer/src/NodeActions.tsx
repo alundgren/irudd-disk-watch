@@ -7,7 +7,6 @@ interface NodeActionsProps {
   kind: Exclude<NodeKind, 'rest'>
   size: number
   files: number
-  canExclude: boolean
   canDelete: boolean
   staged: boolean
   onExclude(path: string): void
@@ -26,7 +25,6 @@ export function NodeActions({
   kind,
   size,
   files,
-  canExclude,
   canDelete,
   staged,
   onExclude,
@@ -41,11 +39,12 @@ export function NodeActions({
       <button title="Show in Explorer" onClick={withPath((resolvedPath) => api.showInExplorer(resolvedPath))}>
         Show
       </button>
-      {canExclude && (
-        <button title="Exclude this folder from views and future scans" onClick={withPath(onExclude)}>
-          Exclude
-        </button>
-      )}
+      <button
+        title={`Exclude this ${kind === 'file' ? 'file' : 'folder'} from views and future scans`}
+        onClick={withPath(onExclude)}
+      >
+        Exclude
+      </button>
       {canDelete && (
         <button
           className={staged ? 'danger' : 'danger-quiet'}

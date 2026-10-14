@@ -128,9 +128,15 @@ function registerIpc() {
     if (activeDelete) throw new Error('Wait for deletion to finish before removing a disk.')
     return store.removeDisk(diskId)
   })
-  ipcMain.handle('pickExclude', async (_e, diskId: number) => {
+  ipcMain.handle('pickExclude', async (_e, diskId: number, kind: 'file' | 'dir') => {
     const { root } = store.getDisk(diskId)
-    const path = await pickFolder('Choose a folder to exclude', root)
+    if (kind !== 'file' && kind !== 'dir') throw new Error('Choose a file or folder exclusion.')
+    const result = await dialog.showOpenDialog(window!, {
+      title: `Choose a ${kind === 'file' ? 'file' : 'folder'} to exclude`,
+      defaultPath: root,
+      properties: [kind === 'file' ? 'openFile' : 'openDirectory', 'showHiddenFiles'],
+    })
+    const path = result.filePaths[0] ? resolve(result.filePaths[0]) : null
     if (path && !isInside(root, path)) throw new Error(`${path} is not inside ${root}`)
     return path
   })

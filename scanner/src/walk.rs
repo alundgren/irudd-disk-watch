@@ -56,6 +56,10 @@ impl Walker<'_> {
                     continue;
                 }
             };
+            let child = entry.path();
+            if self.excludes.contains(&exclude_key(&child)) {
+                continue;
+            }
             // On Windows, DirEntry metadata comes from the directory listing itself,
             // so this costs no extra syscall per file.
             let meta = match entry.metadata() {
@@ -71,10 +75,7 @@ impl Walker<'_> {
             }
             let entry_name = entry.file_name().to_string_lossy().into_owned();
             if meta.is_dir() {
-                let child = entry.path();
-                if !self.excludes.contains(&exclude_key(&child)) {
-                    subdir_paths.push((child, entry_name));
-                }
+                subdir_paths.push((child, entry_name));
                 continue;
             }
             self.counters.files.fetch_add(1, Ordering::Relaxed);

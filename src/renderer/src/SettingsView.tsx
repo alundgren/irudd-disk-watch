@@ -45,12 +45,18 @@ export function SettingsView({
       onError(error)
     }
   }
-  const addExclude = async () => {
+  const addExclude = async (kind: 'file' | 'dir') => {
+    setBusy(true)
     try {
-      const path = await api.pickExclude(disk.id)
-      if (path) await setExcludes([...disk.excludes, path])
+      const path = await api.pickExclude(disk.id, kind)
+      if (path) {
+        await api.addExclude(disk.id, path)
+        onChanged()
+      }
     } catch (error) {
       onError(error)
+    } finally {
+      setBusy(false)
     }
   }
   const deleteScan = async (scan: ScanSummary) => {
@@ -104,19 +110,26 @@ export function SettingsView({
         </p>
       </section>
       <section>
-        <h2>Excluded folders</h2>
+        <h2>Excluded files and folders</h2>
         <p className="muted">Hidden immediately from views and comparisons, and skipped by future scans.</p>
         {disk.excludes.length > 0 && (
           <ul className="plain-list">
             {disk.excludes.map((path) => (
               <li key={path}>
                 <span className="path">{path}</span>
-                <button onClick={() => setExcludes(disk.excludes.filter((p) => p !== path))}>Remove</button>
+                <button disabled={busy} onClick={() => setExcludes(disk.excludes.filter((p) => p !== path))}>
+                  Remove
+                </button>
               </li>
             ))}
           </ul>
         )}
-        <button onClick={addExclude}>Add excluded folder…</button>
+        <button disabled={busy} onClick={() => addExclude('dir')}>
+          Add excluded folder…
+        </button>{' '}
+        <button disabled={busy} onClick={() => addExclude('file')}>
+          Add excluded file…
+        </button>
       </section>
 
       <section>

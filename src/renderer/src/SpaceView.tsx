@@ -91,7 +91,7 @@ export function SpaceView({
           return {
             name: (
               <span className={`name kind-${row.kind}${isStaged ? ' staged-row' : ''}`}>
-                {row.kind === 'rest' ? `${formatCount(row.files)} smaller files` : row.name}
+                {row.name}
                 {isStaged && <span className="tag staged">queued</span>}
               </span>
             ),
@@ -110,7 +110,6 @@ export function SpaceView({
                     kind={row.kind}
                     size={row.size}
                     files={row.files}
-                    canExclude={row.kind === 'dir'}
                     canDelete={depth >= 1}
                     staged={isStaged}
                     onExclude={onExclude}

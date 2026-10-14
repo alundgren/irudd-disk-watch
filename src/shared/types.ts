@@ -136,7 +136,7 @@ export interface DiskWatchApi {
   listDisks(): Promise<Disk[]>
   pickAndAddDisk(): Promise<Disk | null>
   removeDisk(diskId: number): Promise<void>
-  pickExclude(diskId: number): Promise<string | null>
+  pickExclude(diskId: number, kind: 'file' | 'dir'): Promise<string | null>
   setExcludes(diskId: number, paths: string[]): Promise<void>
   addExclude(diskId: number, path: string): Promise<void>
   openDisk(diskId: number): Promise<DiskSnapshot>

@@ -25,6 +25,7 @@ write('Projects/edit.prproj', 2 * MB)
 for (let i = 0; i < 300; i++) write(`Projects/cache/peak${i}.pek`, 4000)
 write('Downloads/installer.exe', 12 * MB)
 write('Temp/scratch.bin', 30 * MB)
+write('unlisted.txt', 100)
 
 const store = new Store(openDb(join(userData, 'disk-watch.db')))
 store.setExcludes(store.addDisk(root).id, [join(root, 'Temp')])
@@ -49,10 +50,24 @@ try {
   await page.setViewportSize({ width: 1280, height: 820 })
 
   async function scan(page: Page) {
+    await page.evaluate(() => {
+      const state = window as unknown as { fixtureScanFinished: boolean }
+      state.fixtureScanFinished = false
+      const unsubscribe = window.diskWatch.onScanEvent((event) => {
+        if (event.type === 'run-finished') {
+          state.fixtureScanFinished = true
+          unsubscribe()
+        }
+      })
+    })
     await page.getByRole('button', { name: 'Scan all drives' }).click()
+    await page.waitForFunction(
+      () => (window as unknown as { fixtureScanFinished: boolean }).fixtureScanFinished,
+      undefined,
+      { timeout: 60_000, polling: 100 },
+    )
     await page.getByRole('button', { name: 'Scan all drives' }).waitFor({ timeout: 60_000 })
     await page.getByText(/Loading (view|comparison)/).waitFor({ state: 'hidden' })
-    await page.waitForTimeout(100)
     const methods = await page.evaluate(async () =>
       (await window.diskWatch.listDisks()).map((disk) => disk.latestScan?.method),
     )
@@ -70,19 +85,23 @@ try {
     .nth(1)
     .waitFor({ timeout: 5000 })
   assert.equal(await page.getByText('never scanned').count(), 0, 'one click scans every tracked folder')
+  assert.equal(await page.getByRole('treeitem').count(), 3, 'root aggregate is not a visible row')
 
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day1/ }).click()
   await page.getByRole('treeitem', { name: /A001\.mov/ }).waitFor()
   await page.getByRole('treeitem', { name: /Projects/ }).click()
   await page.getByRole('treeitem', { name: /cache/ }).click()
-  await page.getByRole('treeitem', { name: /300 smaller files/ }).waitFor()
+  assert.match(await page.getByRole('treeitem', { name: /cache/ }).innerText(), /1\.14 MB\s+300/)
+  assert.equal(await page.getByRole('treeitem', { name: /smaller files/ }).count(), 0)
+  assert.equal(await page.getByText('Empty folder', { exact: true }).count(), 0, 'aggregate-only folder is not empty')
   assert.equal(await page.getByRole('treeitem', { name: /Temp/ }).count(), 0, 'excluded folder is not in the tree')
   await page.screenshot({ path: join(shots, '2-space.png') })
 
   write('Footage/day2/B001.mov', 60 * MB)
   write('Footage/day2/B002.mov', 45 * MB)
   write('Footage/day1/A003.mov', 5 * MB)
+  write('Projects/cache/new-small.pek', 512 * 1024)
   rmSync(join(root, 'Downloads'), { recursive: true })
   await scan(page)
 
@@ -135,7 +154,17 @@ try {
             `${row.querySelector('.path')?.textContent?.trim() ?? ''}\n${row.querySelector('.num')?.textContent?.trim() ?? ''}`,
         ),
       )
-  assert.deepEqual(await hotspotItems(), ['Footage\\day2\n+105 MB', 'Footage\\day1\n+5.00 MB'])
+  assert.deepEqual(await hotspotItems(), [
+    'Footage\\day2\n+105 MB',
+    'Footage\\day1\n+5.00 MB',
+    'Projects\\cache\n+512 KB',
+  ])
+  await page.getByRole('treeitem', { name: /Projects/ }).click()
+  const changedCache = page.getByRole('treeitem', { name: /cache/ })
+  await changedCache.click()
+  assert.match(await changedCache.innerText(), /1\.14 MB\s+1\.64 MB\s+\+512 KB/)
+  assert.equal(await page.getByRole('treeitem', { name: /smaller files/ }).count(), 0, 'Changes omits aggregate rows')
+  assert.equal(await page.getByText('Nothing changed here', { exact: true }).count(), 0)
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day2/ }).waitFor()
   assert.match(await page.getByRole('treeitem', { name: /Downloads/ }).innerText(), /gone/i)
@@ -145,6 +174,10 @@ try {
   await page.getByRole('button', { name: /^Scan \d/ }).click()
   await page.getByRole('option').nth(1).click()
   await page.getByRole('treeitem', { name: /Downloads/ }).waitFor()
+  await page.getByRole('treeitem', { name: /Projects/ }).click()
+  await page.getByRole('treeitem', { name: /cache/ }).click()
+  assert.match(await page.getByRole('treeitem', { name: /cache/ }).innerText(), /1\.14 MB\s+300/)
+  assert.equal(await page.getByRole('treeitem', { name: /smaller files/ }).count(), 0, 'old scans omit aggregate rows')
   await page.screenshot({ path: join(shots, '4-old-scan.png') })
 
   await page.getByRole('tab', { name: 'Settings' }).click()
@@ -164,9 +197,9 @@ try {
   await page.screenshot({ path: join(shots, '6-hide-dialog.png') })
   await hide.getByRole('button', { name: 'Hide path', exact: true }).click()
   await page.getByText('Hidden paths updated.').waitFor()
-  assert.deepEqual(await hotspotItems(), ['Footage\\day1\n+5.00 MB'])
+  assert.deepEqual(await hotspotItems(), ['Footage\\day1\n+5.00 MB', 'Projects\\cache\n+512 KB'])
   assert.equal(await page.locator('.hotspots .path').filter({ hasText: 'day2' }).count(), 0)
-  assert.match(await page.locator('.view-bar .total').innerText(), /7.00 MB/)
+  assert.match(await page.locator('.view-bar .total').innerText(), /6.50 MB/)
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   assert.equal(await page.getByRole('treeitem', { name: /day2/ }).count(), 0)
   await page.getByRole('treeitem', { name: /Downloads/ }).click({ button: 'right' })
@@ -437,6 +470,82 @@ try {
     'saving the current dialog changes only its captured disk',
   )
 
+  // A real file can be excluded from Changes or Space; Settings exposes separate native pickers.
+  const fileToExclude = join(root, 'Footage', 'day2', 'B001.mov')
+  const exclusion = (path: string) =>
+    page
+      .locator('.settings section')
+      .filter({ has: page.getByRole('heading', { name: 'Excluded files and folders', exact: true }) })
+      .locator('li')
+      .filter({ hasText: path })
+  await page.getByRole('tab', { name: 'Changes' }).click()
+  await page.getByRole('treeitem', { name: /Footage/ }).click()
+  await page.getByRole('treeitem', { name: /day2/ }).click()
+  await page.getByRole('treeitem', { name: /B001\.mov/ }).click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
+  await page.getByText(`${fileToExclude} is excluded.`).waitFor()
+  assert.match(
+    await page.locator('.hotspots section').first().locator('li').filter({ hasText: 'Footage\\day2' }).innerText(),
+    /\+45\.0 MB/,
+  )
+  await page.getByRole('treeitem', { name: /Footage/ }).click()
+  await page.getByRole('treeitem', { name: /day2/ }).click()
+  assert.equal(await page.getByRole('treeitem', { name: /B001\.mov/ }).count(), 0)
+  await page.getByRole('treeitem', { name: /B002\.mov/ }).waitFor()
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await exclusion(fileToExclude).getByRole('button', { name: 'Remove', exact: true }).click()
+
+  // Stub only the native picker, so this drives the real Settings -> IPC -> Store path without desktop dialogs.
+  await app.evaluate(({ dialog }) => {
+    const state = globalThis as unknown as {
+      pickerResult: string | null
+      pickerOptions: { title?: string; properties?: string[] }[]
+    }
+    state.pickerResult = null
+    state.pickerOptions = []
+    dialog.showOpenDialog = (async (_window: unknown, options: { title?: string; properties?: string[] }) => {
+      state.pickerOptions.push(options)
+      return { canceled: !state.pickerResult, filePaths: state.pickerResult ? [state.pickerResult] : [] }
+    }) as typeof dialog.showOpenDialog
+  })
+  await page.getByRole('button', { name: 'Add excluded folder…' }).click()
+  await page.getByRole('button', { name: 'Add excluded file…' }).waitFor({ state: 'visible' })
+  await app.evaluate((_electron, path) => {
+    ;(globalThis as unknown as { pickerResult: string }).pickerResult = path
+  }, fileToExclude)
+  await page.getByRole('button', { name: 'Add excluded file…' }).click()
+  await exclusion(fileToExclude).waitFor()
+  const pickerOptions = await app.evaluate(
+    () => (globalThis as unknown as { pickerOptions: { title?: string; properties?: string[] }[] }).pickerOptions,
+  )
+  assert.deepEqual(
+    pickerOptions.map((options) => options.properties),
+    [
+      ['openDirectory', 'showHiddenFiles'],
+      ['openFile', 'showHiddenFiles'],
+    ],
+  )
+  await page.screenshot({ path: join(shots, '14-file-exclusions.png') })
+  await page.getByRole('tab', { name: 'Space' }).click()
+  await page.getByRole('treeitem', { name: /Footage/ }).click()
+  await page.getByRole('treeitem', { name: /day2/ }).click()
+  assert.equal(
+    await page.getByRole('treeitem', { name: /B001\.mov/ }).count(),
+    0,
+    'file picker exclusion filters Space',
+  )
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await exclusion(fileToExclude).getByRole('button', { name: 'Remove', exact: true }).click()
+  await page.getByRole('tab', { name: 'Space' }).click()
+  await page.getByRole('treeitem', { name: /Footage/ }).click()
+  await page.getByRole('treeitem', { name: /day2/ }).click()
+  const fileRow = page.getByRole('treeitem', { name: /B001\.mov/ })
+  await fileRow.hover()
+  await fileRow.getByRole('button', { name: 'Exclude', exact: true }).click()
+  await page.getByText(`${fileToExclude} is excluded.`).waitFor()
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await exclusion(fileToExclude).getByRole('button', { name: 'Remove', exact: true }).click()
+
   // Exclude recalculates the bottom tree and top Changes list immediately. Settings restores it.
   await page.getByRole('tab', { name: 'Changes' }).click()
   await page.getByText('Where new data landed').waitFor()
@@ -466,7 +575,7 @@ try {
   await page.getByRole('tab', { name: 'Settings' }).click()
   const excludedRow = page
     .locator('.settings section')
-    .filter({ has: page.getByRole('heading', { name: 'Excluded folders', exact: true }) })
+    .filter({ has: page.getByRole('heading', { name: 'Excluded files and folders', exact: true }) })
     .locator('li')
     .filter({ hasText: join(root, 'Footage', 'day2') })
   await excludedRow.getByRole('button', { name: 'Remove', exact: true }).click()
