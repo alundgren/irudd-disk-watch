@@ -1,0 +1,57 @@
+name: Windows
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DEBUG: pw:browser*
+      ELECTRON_ENABLE_LOGGING: '1'
+      ELECTRON_ENABLE_STACK_DUMPING: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Set up stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: cargo test --manifest-path scanner/Cargo.toml
+      - name: Check Electron runtime
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
+        run: |
+          @'
+          const { spawnSync } = require('node:child_process')
+          const result = spawnSync('./node_modules/electron/dist/electron.exe', ['-p', 'JSON.stringify(process.versions)'], {
+            encoding: 'utf8', windowsHide: true,
+          })
+          console.log(result.stdout)
+          console.error(result.stderr)
+          console.log('Electron Node-mode exit code:', result.status)
+          if (result.error) console.error(result.error)
+          process.exit(result.status ?? 1)
+          '@ | node
+      - run: npm run verify
+      - run: npm run dist:win
+      - run: npm run verify:packaged
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Disk-Watch-Windows-x64
+          path: dist/*-Setup.exe
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,47 @@
+{
+  "name": "disk-watch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Track where your disk space went, snapshot by snapshot.",
+  "author": "Andreas Lundgren",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "postinstall": "install-electron",
+    "scanner": "node scripts/build-scanner.mjs",
+    "dev": "npm run scanner && electron-vite dev",
+    "build": "npm run scanner && electron-vite build",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1",
+    "verify:packaged": "node scripts/verify-packaged.mjs",
+    "start": "electron-vite preview",
+    "typecheck": "tsc -p .",
+    "test": "npm run scanner && vitest run",
+    "format": "prettier --write src scripts electron.vite.config.ts",
+    "verify": "npm run build && node scripts/verify.ts",
+    "bench": "node scripts/bench.ts",
+    "app": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-admin.ps1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.7.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "^5.0.0",
+    "playwright-core": "^1.64.0",
+    "prettier": "^3.9.10",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.7",
+    "vitest": "^5.0.4"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "electron@44.7.0": true
+  }
+}
