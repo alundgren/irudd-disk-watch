@@ -828,15 +828,28 @@ try {
   const lockedPath = join(root, longFile)
   const before = await page.evaluate(async () => (await window.diskWatch.listDisks()).map((disk) => disk.latestScan))
   await app.evaluate(async ({ clipboard, ClipboardItem }) => {
-    const items = await clipboard.read()
-    ;(globalThis as unknown as { fixtureClipboard: Electron.ClipboardItem[] }).fixtureClipboard = await Promise.all(
-      items.map(
-        async (item) =>
-          new ClipboardItem(
-            Object.fromEntries(await Promise.all(item.types.map(async (type) => [type, await item.getType(type)]))),
+    const snapshot = async () => {
+      const items = await clipboard.read()
+      return Promise.all(
+        items
+          .filter((item) => item.types.length > 0)
+          .map(
+            async (item) =>
+              new ClipboardItem(
+                Object.fromEntries(await Promise.all(item.types.map(async (type) => [type, await item.getType(type)]))),
+              ),
           ),
-      ),
-    )
+      )
+    }
+    const saved = await snapshot()
+    ;(globalThis as unknown as { fixtureClipboard: Electron.ClipboardItem[] }).fixtureClipboard = saved
+    try {
+      clipboard.clear()
+      if ((await snapshot()).length !== 0) throw new Error('Empty clipboard snapshot should contain no entries.')
+    } finally {
+      if (saved.length) await clipboard.write(saved)
+      else clipboard.clear()
+    }
   })
   const lock = await holdFile(lockedPath)
   try {
