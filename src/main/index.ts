@@ -2,14 +2,22 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { execFile } from 'node:child_process'
 import { statfsSync } from 'node:fs'
 import { join, parse, relative, resolve } from 'node:path'
-import type { Disk, ScanEvent, ScanProgress } from '../shared/types'
+import type { DeleteResult, Disk, ScanEvent, ScanProgress, StagedDelete } from '../shared/types'
+import { executeDelete } from './scan'
 import type { ScanWorkerData } from './scanWorker'
 import createScanWorker from './scanWorker?nodeWorker'
 import { openDb, Store, type DiskRow } from './store'
 
 const MIN_FILE_SIZE = 1024 * 1024
 
+app.setName('Disk Watch')
+app.setAppUserModelId('com.irudd.diskwatch')
+if (!app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', join(app.getPath('appData'), 'disk-watch'))
+}
+
 const dbFile = join(app.getPath('userData'), 'disk-watch.db')
+const iconFile = app.isPackaged ? join(process.resourcesPath, 'icon.ico') : join(app.getAppPath(), 'build/icon.ico')
 const scannerExe = app.isPackaged
   ? join(process.resourcesPath, 'dw-scan.exe')
   : join(app.getAppPath(), 'scanner/target/release/dw-scan.exe')
@@ -22,6 +30,7 @@ interface ActiveScan {
 }
 
 let activeScan: ActiveScan | null = null
+let activeDelete: Promise<DeleteResult> | null = null
 
 function capacity(root: string): Disk['capacity'] {
   try {
@@ -38,6 +47,7 @@ function toDisk(row: DiskRow): Disk {
     excludes: store.excludes(row.id),
     latestScan: store.latestCompleteScan(row.id),
     capacity: capacity(row.root),
+    hides: store.hideSettings(row.id),
   }
 }
 
@@ -46,6 +56,7 @@ function send(event: ScanEvent) {
 }
 
 function startScan() {
+  if (activeDelete) throw new Error('Wait for deletion to finish before scanning.')
   if (activeScan) throw new Error('A scan is already running')
   const diskIds = store.listDisks().map((disk) => disk.id)
   const [first] = diskIds
@@ -107,7 +118,10 @@ function registerIpc() {
     const path = await pickFolder('Choose a drive or folder to track')
     return path ? toDisk(store.addDisk(path)) : null
   })
-  ipcMain.handle('removeDisk', (_e, diskId: number) => store.removeDisk(diskId))
+  ipcMain.handle('removeDisk', (_e, diskId: number) => {
+    if (activeDelete) throw new Error('Wait for deletion to finish before removing a disk.')
+    return store.removeDisk(diskId)
+  })
   ipcMain.handle('pickExclude', async (_e, diskId: number) => {
     const { root } = store.getDisk(diskId)
     const path = await pickFolder('Choose a folder to exclude', root)
@@ -115,15 +129,48 @@ function registerIpc() {
     return path
   })
   ipcMain.handle('setExcludes', (_e, diskId: number, paths: string[]) => store.setExcludes(diskId, paths))
-  ipcMain.handle('listScans', (_e, diskId: number) => store.listScans(diskId))
-  ipcMain.handle('deleteScan', (_e, scanId: number) => store.deleteScan(scanId))
+  ipcMain.handle('addExclude', (_e, diskId: number, path: string) => store.addExclude(diskId, path))
+  ipcMain.handle('openDisk', (_e, diskId: number) => {
+    store.db.exec('BEGIN')
+    try {
+      const snapshot = { disk: toDisk(store.getDisk(diskId)), scans: store.listScans(diskId) }
+      store.db.exec('COMMIT')
+      return snapshot
+    } catch (error) {
+      store.db.exec('ROLLBACK')
+      throw error
+    }
+  })
+  ipcMain.handle('changeHides', (_e, diskId, change) => store.changeHides(diskId, change))
+  ipcMain.handle('undoHides', (_e, undo) => store.undoHides(undo))
+  ipcMain.handle('totals', (_e, scanId, revision) => store.totals(scanId, revision))
+  ipcMain.handle('deleteScan', (_e, scanId: number) => {
+    if (activeDelete) throw new Error('Wait for deletion to finish before removing a scan.')
+    return store.deleteScan(scanId)
+  })
   ipcMain.handle('startScan', () => startScan())
   ipcMain.handle('cancelScan', () => activeScan?.worker.postMessage('cancel'))
   ipcMain.handle('currentScan', () => activeScan?.progress ?? null)
-  ipcMain.handle('children', (_e, scanId: number, nodeId: number) => store.children(scanId, nodeId))
-  ipcMain.handle('diffChildren', (_e, from: number, to: number, nodeId: number) => store.diffChildren(from, to, nodeId))
-  ipcMain.handle('changes', (_e, from: number, to: number) => store.changes(from, to))
+  ipcMain.handle('children', (_e, scanId: number, nodeId: number, revision?: number) =>
+    store.children(scanId, nodeId, revision),
+  )
+  ipcMain.handle('diffChildren', (_e, from: number, to: number, nodeId: number, revision?: number) =>
+    store.diffChildren(from, to, nodeId, revision),
+  )
+  ipcMain.handle('compare', (_e, from: number, to: number, revision: number) => store.compare(from, to, revision))
   ipcMain.handle('nodePath', (_e, nodeId: number) => store.nodePath(nodeId))
+  ipcMain.handle('stageDelete', (_e, diskId: number, nodeId: number) => store.stageDelete(diskId, nodeId))
+  ipcMain.handle('executeDelete', async (_e, diskId: number, targets: StagedDelete[]) => {
+    if (activeScan) throw new Error('Wait for the scan to finish before deleting.')
+    if (activeDelete) throw new Error('A deletion is already running.')
+    const operation = executeDelete(store, scannerExe, diskId, targets)
+    activeDelete = operation
+    try {
+      return await operation
+    } finally {
+      activeDelete = null
+    }
+  })
   ipcMain.handle('showInExplorer', (_e, path: string) => shell.showItemInFolder(path))
   ipcMain.handle('isElevated', () => elevated)
   ipcMain.handle('restartElevated', () => restartElevated())
@@ -131,12 +178,17 @@ function registerIpc() {
 
 function createWindow() {
   window = new BrowserWindow({
+    show: process.env.DISK_WATCH_VERIFY !== '1',
     width: 1280,
     height: 820,
     title: 'Disk Watch',
-    backgroundColor: '#15171c',
+    icon: iconFile,
+    backgroundColor: '#f2eade',
     autoHideMenuBar: true,
-    webPreferences: { preload: join(import.meta.dirname, '../preload/index.cjs') },
+    webPreferences: {
+      preload: join(import.meta.dirname, '../preload/index.cjs'),
+      ...(process.env.DISK_WATCH_VERIFY === '1' ? { offscreen: true, backgroundThrottling: false } : {}),
+    },
   })
   window.on('closed', () => (window = null))
   if (process.env.ELECTRON_RENDERER_URL) window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -154,6 +206,14 @@ app.on('window-all-closed', () => app.quit())
 
 // Quitting mid-scan would orphan dw-scan.exe, so cancel and wait for the worker to clean up.
 app.on('before-quit', (event) => {
+  if (activeDelete) {
+    event.preventDefault()
+    activeDelete.then(
+      () => app.quit(),
+      () => app.quit(),
+    )
+    return
+  }
   if (!activeScan) return
   event.preventDefault()
   activeScan.worker.once('exit', () => app.quit())

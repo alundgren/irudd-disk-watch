@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode, type MouseEvent } from 'react'
 
 const PAGE = 200
 
@@ -9,8 +9,10 @@ interface LazyTreeProps<Row> {
   load(nodeId: number): Promise<Row[]>
   rowId(row: Row): number
   canExpand(row: Row): boolean
-  renderRow(row: Row, siblings: Row[]): { name: ReactNode; cells: ReactNode }
+  renderRow(row: Row, siblings: Row[], depth: number): { name: ReactNode; cells: ReactNode }
   emptyText: string
+  rootRows?: Row[]
+  onContextMenu?(row: Row, event: MouseEvent, depth: number): void
 }
 
 export function LazyTree<Row>(props: LazyTreeProps<Row>) {
@@ -23,11 +25,18 @@ export function LazyTree<Row>(props: LazyTreeProps<Row>) {
 
 function Branch<Row>(props: LazyTreeProps<Row> & { nodeId: number; depth: number }) {
   const { load, nodeId } = props
-  const [rows, setRows] = useState<Row[] | null>(null)
+  const prepared = props.depth === 0 ? props.rootRows : undefined
+  const [rows, setRows] = useState<Row[] | null>(prepared ?? null)
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState(PAGE)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
+    if (prepared) {
+      setRows(prepared)
+      return
+    }
+    setError(null)
     let live = true
     load(nodeId).then(
       (loaded) => live && setRows(loaded),
@@ -36,13 +45,14 @@ function Branch<Row>(props: LazyTreeProps<Row> & { nodeId: number; depth: number
     return () => {
       live = false
     }
-  }, [load, nodeId])
+  }, [load, nodeId, prepared, attempt])
 
   const indent = { paddingLeft: `${props.depth * 18 + 8}px` }
   if (error)
     return (
       <div className="tree-note" style={indent}>
         Could not load: {error}
+        <button onClick={() => setAttempt(attempt + 1)}>Retry</button>
       </div>
     )
   if (!rows)
@@ -75,7 +85,7 @@ function Node<Row>(props: LazyTreeProps<Row> & { row: Row; siblings: Row[]; dept
   const [open, setOpen] = useState(false)
   const { row, depth } = props
   const expandable = props.canExpand(row)
-  const { name, cells } = props.renderRow(row, props.siblings)
+  const { name, cells } = props.renderRow(row, props.siblings, depth)
   return (
     <>
       <div
@@ -84,6 +94,7 @@ function Node<Row>(props: LazyTreeProps<Row> & { row: Row; siblings: Row[]; dept
         aria-expanded={expandable ? open : undefined}
         tabIndex={expandable ? 0 : -1}
         onClick={() => expandable && setOpen(!open)}
+        onContextMenu={(event) => props.onContextMenu?.(row, event, depth)}
         onKeyDown={(e) => {
           if (!expandable) return
           if (e.key === 'Enter' || e.key === ' ') setOpen(!open)

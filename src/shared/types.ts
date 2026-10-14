@@ -28,6 +28,48 @@ export interface Disk {
   excludes: string[]
   latestScan: ScanSummary | null
   capacity: { total: number; free: number } | null
+  hides: HideSettings
+}
+
+export interface HideSettings {
+  paths: string[]
+  metadata: boolean
+  metadataEligible: boolean
+  revision: number
+}
+
+export type HideChange =
+  | { type: 'add'; path: string }
+  | { type: 'remove'; path: string }
+  | { type: 'replace'; path: string; replacement: string }
+  | { type: 'metadata'; enabled: boolean }
+
+export interface HideUndo {
+  diskId: number
+  expectedRevision: number
+  paths: string[]
+  metadata: boolean
+}
+
+export interface ViewTotal {
+  raw: Measure
+  hidden: Measure
+  visible: Measure
+}
+
+export interface Comparison extends ScanChanges {
+  diskId: number
+  fromId: number
+  toId: number
+  revision: number
+  before: ViewTotal
+  after: ViewTotal
+  rows: DiffRow[]
+}
+
+export interface DiskSnapshot {
+  disk: Disk
+  scans: ScanSummary[]
 }
 
 export interface TreeRow {
@@ -64,6 +106,20 @@ export interface ScanChanges {
   newFolders: Hotspot[]
 }
 
+export interface StagedDelete {
+  scanId: number
+  nodeId: number
+  path: string
+  kind: Exclude<NodeKind, 'rest'>
+  size: number
+  files: number
+}
+
+export interface DeleteResult {
+  deleted: string[]
+  failed: { path: string; message: string }[]
+}
+
 /** One click scans every tracked disk in turn. `index` counts from 0. */
 export type ScanProgress = { diskId: number; index: number; count: number } & (
   | { phase: 'starting' }
@@ -82,16 +138,22 @@ export interface DiskWatchApi {
   removeDisk(diskId: number): Promise<void>
   pickExclude(diskId: number): Promise<string | null>
   setExcludes(diskId: number, paths: string[]): Promise<void>
-  listScans(diskId: number): Promise<ScanSummary[]>
+  addExclude(diskId: number, path: string): Promise<void>
+  openDisk(diskId: number): Promise<DiskSnapshot>
+  changeHides(diskId: number, change: HideChange): Promise<{ settings: HideSettings; undo: HideUndo }>
+  undoHides(undo: HideUndo): Promise<HideSettings>
+  totals(scanId: number, revision: number): Promise<ViewTotal>
   deleteScan(scanId: number): Promise<void>
   startScan(): Promise<void>
   cancelScan(): Promise<void>
   currentScan(): Promise<ScanProgress | null>
   onScanEvent(listener: (event: ScanEvent) => void): () => void
-  children(scanId: number, nodeId: number): Promise<TreeRow[]>
-  diffChildren(fromScan: number, toScan: number, nodeId: number): Promise<DiffRow[]>
-  changes(fromScan: number, toScan: number): Promise<ScanChanges>
+  children(scanId: number, nodeId: number, revision?: number): Promise<TreeRow[]>
+  diffChildren(fromScan: number, toScan: number, nodeId: number, revision?: number): Promise<DiffRow[]>
+  compare(fromScan: number, toScan: number, revision: number): Promise<Comparison>
   nodePath(nodeId: number): Promise<string>
+  stageDelete(diskId: number, nodeId: number): Promise<StagedDelete>
+  executeDelete(diskId: number, targets: StagedDelete[]): Promise<DeleteResult>
   showInExplorer(path: string): Promise<void>
   isElevated(): Promise<boolean>
   restartElevated(): Promise<void>

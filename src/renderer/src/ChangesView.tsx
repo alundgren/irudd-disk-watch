@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { DiffRow, Disk, Hotspot, ScanChanges, ScanSummary } from '../../shared/types'
+import { useCallback, useState, type MouseEvent } from 'react'
+import { canDeletePath } from '../../shared/paths'
+import type { Comparison, DiffRow, Disk, Hotspot, NodeKind, ScanSummary, StagedDelete } from '../../shared/types'
 import { api, formatBytes, formatCount, formatDelta } from './api'
 import { LazyTree } from './LazyTree'
 import { NodeActions } from './NodeActions'
@@ -9,41 +10,61 @@ interface ChangesViewProps {
   disk: Disk
   scans: ScanSummary[]
   onExclude(path: string): void
+  staged: StagedDelete[]
+  onToggleDelete(item: {
+    nodeId: number
+    path?: string
+    kind: Exclude<NodeKind, 'rest'>
+    size: number
+    files: number
+  }): void
+  comparison: Comparison
+  onPick(field: 'from' | 'to', scanId: number): void
+  onContext(
+    target: {
+      nodeId: number
+      path?: string
+      kind?: Exclude<NodeKind, 'rest'>
+      size?: number
+      files?: number
+      canDelete?: boolean
+    },
+    event: MouseEvent,
+  ): void
 }
 
 const delta = (row: DiffRow) => (row.after?.size ?? 0) - (row.before?.size ?? 0)
 
-export function ChangesView({ disk, scans, onExclude }: ChangesViewProps) {
-  const [toId, setToId] = useState(scans[0]!.id)
-  const [fromId, setFromId] = useState(scans[1]!.id)
+export function ChangesView({
+  disk,
+  scans,
+  comparison,
+  onPick,
+  onContext,
+  onExclude,
+  staged,
+  onToggleDelete,
+}: ChangesViewProps) {
   const [hideUnchanged, setHideUnchanged] = useState(true)
-  const [changes, setChanges] = useState<ScanChanges | null>(null)
-  const pick = (id: number) => scans.find((scan) => scan.id === id) ?? scans[0]!
-  const [from, to] = [pick(fromId), pick(toId)].sort((a, b) => a.startedAt - b.startedAt) as [ScanSummary, ScanSummary]
-
-  useEffect(() => {
-    let live = true
-    setChanges(null)
-    api.changes(from.id, to.id).then((loaded) => live && setChanges(loaded))
-    return () => {
-      live = false
-    }
-  }, [from, to])
-
+  const { fromId, toId, revision } = comparison
+  const stagedIds = new Set(staged.map((item) => item.nodeId))
   const load = useCallback(
     async (nodeId: number) => {
-      const rows = await api.diffChildren(from.id, to.id, nodeId)
-      return hideUnchanged ? rows.filter((row) => delta(row) !== 0) : rows
+      const rows = await api.diffChildren(fromId, toId, nodeId, revision)
+      return hideUnchanged ? rows.filter((row) => delta(row) !== 0 || row.before === null || row.after === null) : rows
     },
-    [from, to, hideUnchanged],
+    [fromId, toId, revision, hideUnchanged],
   )
-
-  if (from.id === to.id) {
+  const from = scans.find((scan) => scan.id === fromId)!
+  const to = scans.find((scan) => scan.id === toId)!
+  const pickFrom = (id: number) => onPick('from', id)
+  const pickTo = (id: number) => onPick('to', id)
+  if (fromId === toId) {
     return (
       <div className="view">
         <div className="view-bar">
-          <ScanPicker label="From" scans={scans} value={fromId} onChange={setFromId} />
-          <ScanPicker label="To" scans={scans} value={toId} onChange={setToId} />
+          <ScanPicker label="From" scans={scans} value={fromId} onChange={pickFrom} />
+          <ScanPicker label="To" scans={scans} value={toId} onChange={pickTo} />
         </div>
         <p className="empty">Pick two different scans to compare.</p>
       </div>
@@ -53,23 +74,39 @@ export function ChangesView({ disk, scans, onExclude }: ChangesViewProps) {
   return (
     <div className="view">
       <div className="view-bar">
-        <ScanPicker label="From" scans={scans} value={fromId} onChange={setFromId} />
-        <ScanPicker label="To" scans={scans} value={toId} onChange={setToId} />
-        <span className={`total ${to.size >= from.size ? 'grew' : 'shrank'}`}>{formatDelta(to.size - from.size)}</span>
+        <ScanPicker label="From" scans={scans} value={fromId} onChange={pickFrom} />
+        <ScanPicker label="To" scans={scans} value={toId} onChange={pickTo} />
+        <span
+          className={`total ${comparison.after.visible.size >= comparison.before.visible.size ? 'grew' : 'shrank'}`}
+        >
+          {formatDelta(comparison.after.visible.size - comparison.before.visible.size)}
+        </span>
       </div>
 
+      <p className="muted small accounting">
+        Captured {formatBytes(comparison.before.raw.size)} → {formatBytes(comparison.after.raw.size)} · Hidden{' '}
+        {formatBytes(comparison.before.hidden.size)} → {formatBytes(comparison.after.hidden.size)}
+      </p>
       <div className="hotspots">
-        <HotspotList
+        <SummarizeHotspotList
           root={disk.root}
           title="Where new data landed"
           hint="Folders whose own files grew the most"
-          items={changes?.grownFolders}
+          items={comparison.grownFolders}
+          stagedIds={stagedIds}
+          onContext={onContext}
+          onExclude={onExclude}
+          onToggleDelete={onToggleDelete}
         />
-        <HotspotList
+        <SummarizeHotspotList
           root={disk.root}
           title="New folders"
           hint="The biggest folders that did not exist before"
-          items={changes?.newFolders}
+          items={comparison.newFolders}
+          stagedIds={stagedIds}
+          onContext={onContext}
+          onExclude={onExclude}
+          onToggleDelete={onToggleDelete}
         />
       </div>
 
@@ -84,22 +121,44 @@ export function ChangesView({ disk, scans, onExclude }: ChangesViewProps) {
         </label>
       </div>
       <LazyTree<DiffRow>
-        reloadKey={`${from.id}-${to.id}-${hideUnchanged}`}
+        reloadKey={`${from.id}-${to.id}-${revision}-${hideUnchanged}`}
+        rootRows={
+          hideUnchanged
+            ? comparison.rows.filter((row) => delta(row) !== 0 || row.before === null || row.after === null)
+            : comparison.rows
+        }
+        onContextMenu={(row, event, depth) => {
+          if (row.kind !== 'rest')
+            onContext(
+              {
+                nodeId: row.nodeId,
+                kind: row.kind,
+                size: row.after?.size ?? row.before?.size ?? 0,
+                files: row.after?.files ?? row.before?.files ?? 0,
+                canDelete: depth >= 1 && row.after !== null,
+              },
+              event,
+            )
+        }}
         rootId={disk.rootNode}
         load={load}
         rowId={(row) => row.nodeId}
         canExpand={(row) => row.kind === 'dir'}
         emptyText={hideUnchanged ? 'Nothing changed here' : 'Empty folder'}
-        renderRow={(row) => {
+        renderRow={(row, _siblings, depth) => {
           const change = delta(row)
           const status = row.before === null ? 'new' : row.after === null ? 'gone' : null
+          const isStaged = stagedIds.has(row.nodeId)
           const name =
             row.kind === 'rest' ? `${formatCount(row.after?.files ?? row.before?.files ?? 0)} smaller files` : row.name
           return {
             name: (
-              <span className={`name kind-${row.kind}${status === 'gone' ? ' gone' : ''}`}>
+              <span
+                className={`name kind-${row.kind}${status === 'gone' ? ' gone' : ''}${isStaged ? ' staged-row' : ''}`}
+              >
                 {name}
                 {status && <span className={`tag ${status}`}>{status}</span>}
+                {isStaged && <span className="tag staged">queued</span>}
               </span>
             ),
             cells: (
@@ -112,7 +171,17 @@ export function ChangesView({ disk, scans, onExclude }: ChangesViewProps) {
                 {row.kind === 'rest' || status === 'gone' ? (
                   <span />
                 ) : (
-                  <NodeActions nodeId={row.nodeId} canExclude={row.kind === 'dir'} onExclude={onExclude} />
+                  <NodeActions
+                    nodeId={row.nodeId}
+                    kind={row.kind}
+                    size={row.after?.size ?? 0}
+                    files={row.after?.files ?? 0}
+                    canExclude={row.kind === 'dir'}
+                    canDelete={depth >= 1}
+                    staged={isStaged}
+                    onExclude={onExclude}
+                    onToggleDelete={onToggleDelete}
+                  />
                 )}
               </>
             ),
@@ -127,33 +196,100 @@ interface HotspotListProps {
   root: string
   title: string
   hint: string
-  items: Hotspot[] | undefined
+  items: Hotspot[]
+  stagedIds: Set<number>
+  onExclude(path: string): void
+  onToggleDelete(item: {
+    nodeId: number
+    path?: string
+    kind: Exclude<NodeKind, 'rest'>
+    size: number
+    files: number
+  }): void
+  onContext(
+    target: {
+      nodeId: number
+      path?: string
+      kind?: Exclude<NodeKind, 'rest'>
+      size?: number
+      files?: number
+      canDelete?: boolean
+    },
+    event: MouseEvent,
+  ): void
 }
 
-function HotspotList({ root, title, hint, items }: HotspotListProps) {
+function SummarizeHotspotList({
+  root,
+  title,
+  hint,
+  items,
+  stagedIds,
+  onContext,
+  onExclude,
+  onToggleDelete,
+}: HotspotListProps) {
   const prefix = root.endsWith('\\') ? root : `${root}\\`
   return (
     <section>
       <h3>{title}</h3>
       <p className="muted small">{hint}</p>
-      {!items ? (
-        <p className="muted small">Comparing…</p>
-      ) : items.length === 0 ? (
+      {items.length === 0 ? (
         <p className="muted small">None</p>
       ) : (
         <ol>
-          {items.map((item) => (
-            <li key={item.nodeId}>
-              <button
-                className="path"
-                title={`Show ${item.path} in Explorer`}
-                onClick={() => api.showInExplorer(item.path)}
+          {items.map((item) => {
+            const isRoot = item.path.toLowerCase() === root.toLowerCase()
+            const deletable = !isRoot && canDeletePath(root, item.path)
+            const isStaged = stagedIds.has(item.nodeId)
+            return (
+              <li
+                key={item.nodeId}
+                onContextMenu={(event) => {
+                  if (!isRoot)
+                    onContext(
+                      {
+                        nodeId: item.nodeId,
+                        path: item.path,
+                        kind: 'dir',
+                        size: item.after,
+                        files: 0,
+                        canDelete: deletable,
+                      },
+                      event,
+                    )
+                }}
               >
-                {item.path.startsWith(prefix) ? item.path.slice(prefix.length) : item.path}
-              </button>
-              <span className="num grew strong">{formatDelta(item.after - item.before)}</span>
-            </li>
-          ))}
+                <span className="hotspot-path">
+                  <button
+                    className={`path${isStaged ? ' staged-row' : ''}`}
+                    title={`Show ${item.path} in Explorer`}
+                    onClick={() => api.showInExplorer(item.path)}
+                  >
+                    {item.path.startsWith(prefix) ? item.path.slice(prefix.length) : item.path}
+                  </button>
+                  {isStaged && <span className="tag staged">queued</span>}
+                </span>
+                <span className="num grew strong">{formatDelta(item.after - item.before)}</span>
+                {isRoot ? (
+                  <span />
+                ) : (
+                  <NodeActions
+                    nodeId={item.nodeId}
+                    path={item.path}
+                    kind="dir"
+                    size={item.after}
+                    files={0}
+                    canExclude
+                    canDelete={deletable}
+                    staged={isStaged}
+                    onExclude={onExclude}
+                    onToggleDelete={onToggleDelete}
+                  />
+                )}
+              </li>
+            )
+          })}
         </ol>
       )}
     </section>

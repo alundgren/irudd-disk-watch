@@ -1,4 +1,5 @@
-//! Scans a drive or folder and prints its tree as NDJSON on stdout.
+//! Scans a drive or folder and prints its tree as NDJSON on stdout, or deletes
+//! typed JSON targets from stdin with `dw-scan --delete --root <tracked-root>`.
 //!
 //! While scanning it prints `progress` lines. When the scan finishes it prints the
 //! tree in pre-order (every dir line comes before its children), then `error`
@@ -7,13 +8,14 @@
 //!
 //! `--method auto` reads the NTFS MFT when it can and falls back to listing folders.
 
+mod delete;
 mod mft;
 mod tree;
 mod walk;
 
 use serde_json::json;
 use std::collections::HashSet;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -199,7 +201,50 @@ fn run(args: Args) -> i32 {
     }
 }
 
+fn parse_delete_args() -> Result<(PathBuf, Vec<delete::Target>), String> {
+    let args: Vec<_> = std::env::args().skip(2).collect();
+    if args.len() != 2 || args[0] != "--root" {
+        return Err("usage: dw-scan --delete --root <tracked-root>, with JSON targets on stdin".into());
+    }
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).map_err(|err| err.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&input).map_err(|err| err.to_string())?;
+    let rows = value.as_array().ok_or("Delete targets must be a JSON array.")?;
+    if rows.is_empty() {
+        return Err("No delete targets supplied.".into());
+    }
+    let targets = rows.iter()
+        .map(|row| {
+            let path = row["path"].as_str().ok_or("Each delete target needs a path.")?;
+            let kind = match row["kind"].as_str() {
+                Some("file") => delete::Kind::File,
+                Some("dir") => delete::Kind::Dir,
+                _ => return Err("Each delete target needs a file or dir kind."),
+            };
+            Ok(delete::Target { path: PathBuf::from(path), kind })
+        })
+        .collect::<Result<Vec<_>, &str>>()?;
+    Ok((PathBuf::from(&args[1]), targets))
+}
+
 fn main() {
+    let mut raw_args = std::env::args().skip(1).peekable();
+    if raw_args.peek().is_some_and(|arg| arg == "--delete") {
+        let (root, targets) = match parse_delete_args() {
+            Ok(paths) => paths,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
+        };
+        let code = std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || delete::run_delete(root, targets))
+            .expect("delete thread")
+            .join()
+            .unwrap_or(1);
+        std::process::exit(code);
+    }
     let args = match parse_args() {
         Ok(args) => args,
         Err(message) => {

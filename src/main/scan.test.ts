@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
-import { runScan } from './scan'
+import { executeDelete, runScan } from './scan'
 import { openDb, Store } from './store'
 
 const scannerExe = join(import.meta.dirname, '../../scanner/target/release/dw-scan.exe')
@@ -94,4 +94,85 @@ test('a cancelled scan leaves no rows behind', async () => {
   expect(outcome.status).toBe('cancelled')
   expect(store.children(outcome.scanId, disk.rootNode)).toEqual([])
   expect(store.latestCompleteScan(disk.id)).toBeNull()
+})
+
+test('executeDelete removes nested items and leaves every captured scan unchanged', async () => {
+  const disk = store.addDisk(root)
+  for (let i = 0; i < 50; i++) write(`footage/node_modules/pkg-${i}/index.js`, 64)
+  const initial = await scan(disk.id)
+  const capturedScans = store.listScans(disk.id)
+  const capturedEntries = store.db.prepare('SELECT * FROM entry ORDER BY scan_id,node_id').all()
+  const footage = store.children(initial.scanId, disk.rootNode).find((row) => row.name === 'footage')!
+  expect(() => store.stageDelete(disk.id, disk.rootNode)).toThrow(/top-level/)
+  expect(() => store.stageDelete(disk.id, footage.nodeId)).toThrow(/top-level/)
+  const children = store.children(initial.scanId, footage.nodeId)
+  const stage = (name: string) => store.stageDelete(disk.id, children.find((row) => row.name === name)!.nodeId)
+  const targetDir = join(root, 'footage', 'node_modules')
+  const targetFile = join(root, 'footage', 'a.mov')
+  const parent = stage('node_modules')
+  const child = store.children(initial.scanId, parent.nodeId)[0]!
+  const result = await executeDelete(store, scannerExe, disk.id, [
+    parent,
+    store.stageDelete(disk.id, child.nodeId),
+    stage('a.mov'),
+  ])
+  expect(result).toEqual({ deleted: [targetDir, targetFile], failed: [] })
+  expect(existsSync(targetDir)).toBe(false)
+  expect(existsSync(targetFile)).toBe(false)
+  expect(existsSync(join(root, 'footage', 'notes.txt'))).toBe(true)
+  expect(store.listScans(disk.id)).toEqual(capturedScans)
+  expect(store.db.prepare('SELECT * FROM entry ORDER BY scan_id,node_id').all()).toEqual(capturedEntries)
+})
+
+test('deletion refuses ancestor junction traversal, unlinks leaf junctions and preserves outside files', async () => {
+  const disk = store.addDisk(root)
+  write('footage/alias/victim/sentinel.txt', 2000)
+  write('footage/leaf/old.bin', 2000)
+  write('footage/tree/inner/old.bin', 2000)
+  await scan(disk.id)
+  const node = (path: string) =>
+    (store.db.prepare('SELECT id FROM node').all() as { id: number }[]).find((row) => store.nodePath(row.id) === path)!
+      .id
+  const through = store.stageDelete(disk.id, node(join(root, 'footage', 'alias', 'victim')))
+  const leaf = store.stageDelete(disk.id, node(join(root, 'footage', 'leaf')))
+  const tree = store.stageDelete(disk.id, node(join(root, 'footage', 'tree')))
+  const outside = mkdtempSync(join(tmpdir(), 'dw-outside-'))
+  mkdirSync(join(outside, 'victim'))
+  writeFileSync(join(outside, 'victim', 'sentinel.txt'), 'outside remains')
+  rmSync(join(root, 'footage', 'alias'), { recursive: true })
+  rmSync(join(root, 'footage', 'leaf'), { recursive: true })
+  rmSync(join(root, 'footage', 'tree', 'inner'), { recursive: true })
+  symlinkSync(outside, join(root, 'footage', 'alias'), 'junction')
+  symlinkSync(outside, join(root, 'footage', 'leaf'), 'junction')
+  symlinkSync(outside, join(root, 'footage', 'tree', 'inner'), 'junction')
+  try {
+    const result = await executeDelete(store, scannerExe, disk.id, [through, leaf, tree])
+    expect(result.deleted).toEqual([leaf.path, tree.path])
+    expect(result.failed).toEqual([{ path: through.path, message: expect.stringMatching(/reparse/) }])
+    expect(readFileSync(join(outside, 'victim', 'sentinel.txt'), 'utf8')).toBe('outside remains')
+    expect(existsSync(leaf.path)).toBe(false)
+    expect(existsSync(tree.path)).toBe(false)
+  } finally {
+    rmSync(join(root, 'footage', 'alias'))
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('deletion rejects stale scans before any filesystem work and preserves file-to-folder replacements', async () => {
+  const disk = store.addDisk(root)
+  const first = await scan(disk.id)
+  const footage = store.children(first.scanId, disk.rootNode).find((row) => row.name === 'footage')!
+  const movieId = store.children(first.scanId, footage.nodeId).find((row) => row.name === 'a.mov')!.nodeId
+  const old = store.stageDelete(disk.id, movieId)
+  await scan(disk.id)
+  await expect(executeDelete(store, scannerExe, disk.id, [old])).rejects.toThrow(/changed/)
+  expect(existsSync(old.path)).toBe(true)
+  const current = store.stageDelete(disk.id, movieId)
+  rmSync(current.path)
+  mkdirSync(current.path)
+  writeFileSync(join(current.path, 'keep.txt'), 'new folder contents')
+  const result = await executeDelete(store, scannerExe, disk.id, [current])
+  expect(result.deleted).toEqual([])
+  expect(result.failed[0]).toMatchObject({ path: current.path, message: expect.stringMatching(/type changed/) })
+  expect(readFileSync(join(current.path, 'keep.txt'), 'utf8')).toBe('new folder contents')
 })

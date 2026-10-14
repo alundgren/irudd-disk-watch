@@ -372,12 +372,12 @@ main {
 
 .space-columns,
 .space-columns ~ .tree .tree-row {
-  grid-template-columns: minmax(0, 1fr) 160px 90px 90px 150px;
+  grid-template-columns: minmax(0, 1fr) 160px 90px 90px 230px;
 }
 
 .diff-columns,
 .diff-columns ~ .tree .tree-row {
-  grid-template-columns: minmax(0, 1fr) 90px 90px 100px 150px;
+  grid-template-columns: minmax(0, 1fr) 90px 90px 100px 230px;
 }
 
 .columns {
@@ -487,6 +487,46 @@ main {
   color: var(--grew);
 }
 
+.tag.staged {
+  color: var(--danger);
+}
+
+.danger-text {
+  color: var(--danger);
+}
+
+.delete-summary {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.delete-summary-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.delete-summary-bar > :first-child {
+  flex: 1;
+}
+
+.staged-list {
+  margin: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.staged-list li:nth-child(odd) {
+  background: var(--bg);
+}
+
 .bar {
   height: 8px;
   border-radius: 4px;
@@ -509,7 +549,9 @@ main {
 }
 
 .tree-row:hover .row-actions,
-.tree-row:focus-within .row-actions {
+.tree-row:focus-within .row-actions,
+.hotspots li:hover .row-actions,
+.hotspots li:focus-within .row-actions {
   visibility: visible;
 }
 
@@ -517,6 +559,7 @@ main {
   padding: 0 8px;
   font-size: 13.5px;
   background: var(--field);
+  white-space: nowrap;
 }
 
 .tree-note,
@@ -553,11 +596,23 @@ main {
 }
 
 .hotspots li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.hotspots li:hover {
+  background: var(--surface);
+}
+
+.hotspot-path {
   display: flex;
-  gap: 12px;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 3px 0;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .hotspots .path {
@@ -637,4 +692,82 @@ button.link {
 
 button.link:hover {
   background: transparent;
+}
+
+.loading-notice {
+  color: var(--muted);
+  padding: 6px 0;
+  font-size: 13.5px;
+}
+.accounting {
+  margin: 0 0 12px;
+}
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.context-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  min-width: 120px;
+}
+.hide-dialog {
+  width: min(680px, 90vw);
+  max-height: 85vh;
+  overflow: auto;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+}
+.hide-dialog::backdrop {
+  background: rgb(96 73 57 / 0.35);
+}
+.hide-dialog h2 {
+  font-size: 22px;
+}
+.hide-dialog input {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--text);
+}
+.ancestors {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 16px;
+}
+.ancestors button {
+  text-align: left;
+  max-width: 100%;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.metadata-toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.metadata-toggle input {
+  accent-color: var(--accent);
 }

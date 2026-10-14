@@ -1,0 +1,35 @@
+appId: com.irudd.diskwatch
+productName: Disk Watch
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+asar: true
+npmRebuild: false
+extraResources:
+  - from: scanner/target/release/dw-scan.exe
+    to: dw-scan.exe
+  - from: build/icon.ico
+    to: icon.ico
+win:
+  target:
+    - target: nsis
+      arch: x64
+  icon: build/icon.ico
+  executableName: Disk Watch
+  requestedExecutionLevel: asInvoker
+  signExecutable: false
+  signAndEditExecutable: true
+nsis:
+  artifactName: Disk-Watch-${version}-${arch}-Setup.${ext}
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  packElevateHelper: false
+  runAfterFinish: false
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: Disk Watch
+  deleteAppDataOnUninstall: false
