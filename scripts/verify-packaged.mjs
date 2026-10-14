@@ -56,6 +56,7 @@ try {
     return disk.latestScan
   })
   assert.equal(scan.status, 'complete')
+  assert.equal(scan.method, 'walk')
   assert.equal(scan.size, 2 * 1024 * 1024)
   assert.equal(scan.files, 1)
   await page.screenshot({ path: join(fixture, 'packaged.png') })

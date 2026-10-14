@@ -27,6 +27,7 @@ export interface ScanOptions {
   scannerExe: string
   diskId: number
   minFileSize: number
+  method?: ScanMethod
   onProgress(progress: DiskProgress): void
   signal: AbortSignal
 }
@@ -142,7 +143,13 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   const excludes = store.excludes(diskId)
   const scanId = store.beginScan(diskId, excludes)
 
+  if (signal.aborted) {
+    store.endScan(scanId, 'cancelled', 'Cancelled')
+    return { scanId, status: 'cancelled', message: 'Cancelled' }
+  }
+
   const args = [disk.root, '--min-file-size', String(options.minFileSize)]
+  if (options.method) args.push('--method', options.method)
   for (const path of excludes) args.push('--exclude', path)
   const child = spawn(options.scannerExe, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
   const onAbort = () => child.kill()

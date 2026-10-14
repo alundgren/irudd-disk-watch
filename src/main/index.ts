@@ -61,7 +61,13 @@ function startScan() {
   const diskIds = store.listDisks().map((disk) => disk.id)
   const [first] = diskIds
   if (first === undefined) return
-  const workerData: ScanWorkerData = { dbFile, scannerExe, diskIds, minFileSize: MIN_FILE_SIZE }
+  const workerData: ScanWorkerData = {
+    dbFile,
+    scannerExe,
+    diskIds,
+    minFileSize: MIN_FILE_SIZE,
+    ...(process.env.DISK_WATCH_VERIFY === '1' ? { method: 'walk' } : {}),
+  }
   const scan: ActiveScan = {
     worker: createScanWorker({ workerData }),
     progress: { diskId: first, index: 0, count: diskIds.length, phase: 'starting' },

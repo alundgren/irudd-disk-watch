@@ -53,6 +53,13 @@ try {
     await page.getByRole('button', { name: 'Scan all drives' }).waitFor({ timeout: 60_000 })
     await page.getByText(/Loading (view|comparison)/).waitFor({ state: 'hidden' })
     await page.waitForTimeout(100)
+    const methods = await page.evaluate(async () =>
+      (await window.diskWatch.listDisks()).map((disk) => disk.latestScan?.method),
+    )
+    assert.ok(
+      methods.length > 0 && methods.every((method) => method === 'walk'),
+      'verification scans use the folder walker',
+    )
   }
 
   await page.getByText('No scans yet').waitFor()

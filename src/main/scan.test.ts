@@ -1,9 +1,12 @@
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { executeDelete, runScan } from './scan'
 import { openDb, Store } from './store'
+
+vi.mock('node:child_process', { spy: true })
 
 const scannerExe = join(import.meta.dirname, '../../scanner/target/release/dw-scan.exe')
 
@@ -16,7 +19,7 @@ function write(path: string, bytes: number) {
 }
 
 function scan(diskId: number, signal = new AbortController().signal) {
-  return runScan({ store, scannerExe, diskId, minFileSize: 1000, onProgress: () => {}, signal })
+  return runScan({ store, scannerExe, diskId, minFileSize: 1000, method: 'walk', onProgress: () => {}, signal })
 }
 
 function childrenByName(scanId: number, nodeId: number) {
@@ -44,7 +47,13 @@ test('a scan stores folder totals, big files, and folds small files', async () =
   const outcome = await scan(disk.id)
 
   expect(outcome.status).toBe('complete')
-  expect(store.listScans(disk.id)[0]).toMatchObject({ status: 'complete', size: 8030, files: 4, dirs: 3 })
+  expect(store.listScans(disk.id)[0]).toMatchObject({
+    status: 'complete',
+    method: 'walk',
+    size: 8030,
+    files: 4,
+    dirs: 3,
+  })
   const top = childrenByName(outcome.scanId, disk.rootNode)
   expect(Object.keys(top)).toEqual(['footage', 'cache'])
   expect(top.footage).toMatchObject({ kind: 'dir', size: 5030, files: 3 })
@@ -88,10 +97,12 @@ test('a cancelled scan leaves no rows behind', async () => {
   const disk = store.addDisk(root)
   const controller = new AbortController()
   controller.abort()
+  vi.mocked(spawn).mockClear()
 
   const outcome = await scan(disk.id, controller.signal)
 
   expect(outcome.status).toBe('cancelled')
+  expect(spawn).not.toHaveBeenCalled()
   expect(store.children(outcome.scanId, disk.rootNode)).toEqual([])
   expect(store.latestCompleteScan(disk.id)).toBeNull()
 })

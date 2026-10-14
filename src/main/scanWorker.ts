@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
-import type { ScanEvent } from '../shared/types'
+import type { ScanEvent, ScanMethod } from '../shared/types'
 import { runScan } from './scan'
 import { openDb, Store } from './store'
 
@@ -8,6 +8,7 @@ export interface ScanWorkerData {
   scannerExe: string
   diskIds: number[]
   minFileSize: number
+  method?: ScanMethod
 }
 
 const data = workerData as ScanWorkerData
@@ -28,6 +29,7 @@ for (const [index, diskId] of data.diskIds.entries()) {
     scannerExe: data.scannerExe,
     diskId,
     minFileSize: data.minFileSize,
+    method: data.method,
     signal: controller.signal,
     onProgress: (progress) => post({ type: 'progress', progress: { diskId, index, count, ...progress } }),
   })
