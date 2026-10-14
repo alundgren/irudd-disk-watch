@@ -1,7 +1,7 @@
 //! Builds the tree by listing folders. Works on any file system without
 //! administrator rights, but is slower than reading the MFT.
 
-use crate::tree::{Counters, Dir};
+use crate::tree::{Counters, Dir, Times, now_ms};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs;
@@ -37,8 +37,15 @@ impl Walker<'_> {
     }
 
     pub fn walk(&self, path: &Path, name: String) -> Dir {
+        let started_at = now_ms();
+        let times = fs::metadata(path).ok().map(|meta| Times::from_metadata(&meta, started_at)).unwrap_or_default();
+        self.walk_dir(path, name, times, started_at)
+    }
+
+    fn walk_dir(&self, path: &Path, name: String, times: Times, started_at: u64) -> Dir {
         self.counters.dirs.fetch_add(1, Ordering::Relaxed);
         let mut dir = Dir::new(name);
+        dir.times = times;
         let mut subdir_paths = Vec::new();
 
         let entries = match fs::read_dir(path) {
@@ -74,18 +81,19 @@ impl Walker<'_> {
                 continue;
             }
             let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let times = Times::from_metadata(&meta, started_at);
             if meta.is_dir() {
-                subdir_paths.push((child, entry_name));
+                subdir_paths.push((child, entry_name, times));
                 continue;
             }
             self.counters.files.fetch_add(1, Ordering::Relaxed);
             self.counters.bytes.fetch_add(meta.len(), Ordering::Relaxed);
-            dir.add_file(entry_name, meta.len(), self.min_file_size);
+            dir.add_file(entry_name, meta.len(), self.min_file_size, times);
         }
 
         let subdirs: Vec<Dir> = subdir_paths
             .into_par_iter()
-            .map(|(child, child_name)| self.walk(&child, child_name))
+            .map(|(child, child_name, times)| self.walk_dir(&child, child_name, times, started_at))
             .collect();
         for sub in subdirs {
             dir.add_subdir(sub);

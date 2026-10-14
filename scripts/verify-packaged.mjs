@@ -59,6 +59,15 @@ try {
   assert.equal(scan.method, 'walk')
   assert.equal(scan.size, 2 * 1024 * 1024)
   assert.equal(scan.files, 1)
+  assert.equal(await page.locator('.write-age').count(), 1)
+  assert.equal(await page.locator('.creation-age').count(), 1)
+  assert.equal(await page.locator('.row-actions').count(), 0)
+  const row = page.getByRole('treeitem', { name: /video\.mov/ })
+  await row.focus()
+  await row.press('Shift+F10')
+  await page.getByRole('menuitem', { name: 'Show in Explorer' }).waitFor()
+  await page.keyboard.press('Escape')
+  assert.equal(await row.evaluate((element) => document.activeElement === element), true)
   await page.screenshot({ path: join(fixture, 'packaged.png') })
   console.log(
     `ok: packaged startup, icon, isolated user data, bundled scanner and worker scan; screenshot ${join(fixture, 'packaged.png')}`,

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode, type MouseEvent } from 'react'
 import type { NodeKind } from '../../shared/types'
+import { openRowContext } from './rowContext'
 
 const PAGE = 200
 
@@ -93,20 +94,24 @@ function Node<Row extends { kind: NodeKind }>(
   return (
     <>
       <div
-        className={`tree-row${expandable ? ' expandable' : ''}`}
+        className={`tree-row${expandable ? ' expandable' : ''}${depth > 0 ? ' child-row' : ''}`}
         role="treeitem"
         aria-expanded={expandable ? open : undefined}
-        tabIndex={expandable ? 0 : -1}
+        tabIndex={0}
         onClick={() => expandable && setOpen(!open)}
         onContextMenu={(event) => props.onContextMenu?.(row, event, depth)}
         onKeyDown={(e) => {
+          if (openRowContext(e)) return
           if (!expandable) return
-          if (e.key === 'Enter' || e.key === ' ') setOpen(!open)
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setOpen(!open)
+          }
           if (e.key === 'ArrowRight') setOpen(true)
           if (e.key === 'ArrowLeft') setOpen(false)
         }}
       >
-        <span className="tree-name" style={{ paddingLeft: `${depth * 18}px` }}>
+        <span className="tree-name" style={{ paddingLeft: `${depth * 22 + 14}px` }}>
           <span className="chevron" aria-hidden>
             {expandable ? (open ? '▾' : '▸') : ''}
           </span>

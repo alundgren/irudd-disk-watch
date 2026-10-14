@@ -27,7 +27,7 @@ function fixture() {
       .prepare("UPDATE scan SET status='complete',method='walk',started_at=?,size=?,files=?,dirs=5 WHERE id=?")
       .run(time, size, files, id)
     for (const [nodeId, size, files] of rows)
-      store.db.prepare('INSERT INTO entry VALUES(?,?,?,?)').run(id, nodeId, size, files)
+      store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,?,?)').run(id, nodeId, size, files)
     return id
   }
   const before = scan(1, [
@@ -52,6 +52,44 @@ function fixture() {
   ])
   return { store, disk, footage, cache, blob, movie, gone, empty, fresh, freshFile, before, after, node, scan }
 }
+
+test('version-two snapshot timestamps migrate as null and remain scan-owned after reopening', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-age-migration-'))
+  const file = join(dir, 'test.db')
+  try {
+    const store = new Store(openDb(file))
+    const disk = store.addDisk('D:\\Legacy')
+    const folder = Number(
+      store.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'Folder','dir')").run(disk.rootNode)
+        .lastInsertRowid,
+    )
+    const scan = store.beginScan(disk.id, [])
+    store.db.prepare("UPDATE scan SET status='complete',size=17,files=2 WHERE id=?").run(scan)
+    for (const node of [disk.rootNode, folder])
+      store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,17,2)').run(scan, node)
+    store.db.exec(
+      'ALTER TABLE entry DROP COLUMN created_at; ALTER TABLE entry DROP COLUMN last_written_at; PRAGMA user_version=2;',
+    )
+    store.db.close()
+    const migrated = new Store(openDb(file))
+    const old = migrated.children(scan, disk.rootNode)[0]!
+    expect(old).toMatchObject({ size: 17, files: 2, createdAt: null, lastWrittenAt: null })
+    const later = migrated.beginScan(disk.id, [])
+    migrated.db.prepare("UPDATE scan SET status='complete',size=18,files=2 WHERE id=?").run(later)
+    migrated.db
+      .prepare('INSERT INTO entry(scan_id,node_id,size,files,created_at,last_written_at) VALUES(?,?,18,2,1000,2000)')
+      .run(later, folder)
+    migrated.db.close()
+    const reopened = new Store(openDb(file))
+    expect(reopened.children(scan, disk.rootNode)[0]).toEqual(old)
+    expect(reopened.children(later, disk.rootNode)[0]).toMatchObject({ createdAt: 1000, lastWrittenAt: 2000 })
+    reopened.changeHides(disk.id, { type: 'add', path: 'D:\\Legacy\\Folder\\Absent' })
+    expect(reopened.children(later, disk.rootNode)[0]).toMatchObject({ createdAt: 1000, lastWrittenAt: 2000 })
+    reopened.db.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('Windows rules compare components, Unicode case, separators and normalized dots', () => {
   expect(canonicalPath('c:/Footage/Cache/../Ärea//file.bin')).toBe('C:\\Footage\\Ärea\\file.bin')
@@ -202,9 +240,9 @@ test('version-one databases migrate transactionally and rules survive reopening'
     fresh.prepare('INSERT INTO exclude VALUES(?,?)').run(existing.id, 'D:\\Legacy\\Skip')
     const oldScan = legacy.beginScan(existing.id, ['D:\\Legacy\\Skip'])
     fresh.prepare("UPDATE scan SET status='complete',size=17,files=2 WHERE id=?").run(oldScan)
-    fresh.prepare('INSERT INTO entry VALUES(?,?,17,2)').run(oldScan, existing.rootNode)
+    fresh.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,17,2)').run(oldScan, existing.rootNode)
     fresh.exec(
-      'DROP TABLE view_hide; ALTER TABLE disk DROP COLUMN hide_metadata; ALTER TABLE disk DROP COLUMN hide_revision; PRAGMA user_version=1;',
+      'ALTER TABLE entry DROP COLUMN created_at; ALTER TABLE entry DROP COLUMN last_written_at; DROP TABLE view_hide; ALTER TABLE disk DROP COLUMN hide_metadata; ALTER TABLE disk DROP COLUMN hide_revision; PRAGMA user_version=1;',
     )
     fresh.close()
     const store = new Store(openDb(file))
@@ -226,7 +264,7 @@ test('version-one databases migrate transactionally and rules survive reopening'
       metadataEligible: false,
       revision: 2,
     })
-    expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 })
+    expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
     reopened.db.close()
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -335,8 +373,8 @@ test('staging uses the latest raw subtree size even when hotspot own files or fi
   const f = fixture()
   const sub = f.node(f.cache, 'nested')
   const file = f.node(sub, 'big.bin', 'file')
-  f.store.db.prepare('INSERT INTO entry VALUES(?,?,300,1)').run(f.after, sub)
-  f.store.db.prepare('INSERT INTO entry VALUES(?,?,300,1)').run(f.after, file)
+  f.store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,300,1)').run(f.after, sub)
+  f.store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,300,1)').run(f.after, file)
   for (const id of [f.cache, f.footage, f.disk.rootNode])
     f.store.db.prepare('UPDATE entry SET size=size+300,files=files+1 WHERE scan_id=? AND node_id=?').run(f.after, id)
   f.store.db.prepare('UPDATE scan SET size=580,files=4 WHERE id=?').run(f.after)

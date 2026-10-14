@@ -1,5 +1,15 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vite-plus/test'
@@ -59,10 +69,67 @@ test('a scan stores folder totals, big files, and folds small files', async () =
   expect(top.footage).toMatchObject({ kind: 'dir', size: 5030, files: 3 })
   const footage = childrenByName(outcome.scanId, top.footage!.nodeId)
   expect(footage).toEqual({
-    'a.mov': { nodeId: expect.any(Number), name: 'a.mov', kind: 'file', size: 5000, files: 1 },
-    '(small files)': { nodeId: expect.any(Number), name: '', kind: 'rest', size: 30, files: 2 },
+    'a.mov': {
+      nodeId: expect.any(Number),
+      name: 'a.mov',
+      kind: 'file',
+      size: 5000,
+      files: 1,
+      createdAt: expect.any(Number),
+      lastWrittenAt: expect.any(Number),
+    },
+    '(small files)': {
+      nodeId: expect.any(Number),
+      name: '',
+      kind: 'rest',
+      size: 30,
+      files: 2,
+      createdAt: null,
+      lastWrittenAt: null,
+    },
   })
   expect(store.nodePath(footage['a.mov']!.nodeId)).toBe(join(root, 'footage', 'a.mov'))
+})
+
+test('in-place small writes reach ancestors, preserve folder creation and old snapshots, and reject future writes', async () => {
+  write('footage/nested/state.txt', 10)
+  const old = new Date(Date.now() - 60_000)
+  for (const path of [
+    'footage/a.mov',
+    'footage/notes.txt',
+    'footage/thumb.jpg',
+    'footage/nested/state.txt',
+    'footage/nested',
+    'footage',
+  ])
+    utimesSync(join(root, path), old, old)
+  const folder = join(root, 'footage')
+  const childFolder = join(folder, 'nested')
+  const small = join(childFolder, 'state.txt')
+  const oldWrite = Math.floor(statSync(small).mtimeMs)
+  const birth = Math.floor(statSync(folder).birthtimeMs)
+  const future = new Date(Date.now() + 86_400_000)
+  utimesSync(join(folder, 'a.mov'), future, future)
+  const disk = store.addDisk(root)
+  const first = await scan(disk.id)
+  const before = childrenByName(first.scanId, disk.rootNode).footage!
+  expect(before).toMatchObject({ createdAt: birth, lastWrittenAt: oldWrite })
+  const nestedBefore = childrenByName(first.scanId, before.nodeId).nested!
+  writeFileSync(small, Buffer.alloc(20))
+  const latest = new Date(Date.now() - 1000)
+  utimesSync(small, latest, latest)
+  expect(Math.floor(statSync(childFolder).mtimeMs)).toBe(oldWrite)
+  const latestWrite = Math.floor(statSync(small).mtimeMs)
+  const second = await scan(disk.id)
+  const after = childrenByName(second.scanId, disk.rootNode).footage!
+  expect(after).toMatchObject({ createdAt: birth, lastWrittenAt: latestWrite })
+  expect(childrenByName(second.scanId, after.nodeId).nested).toMatchObject({
+    createdAt: nestedBefore.createdAt,
+    lastWrittenAt: latestWrite,
+  })
+  expect(childrenByName(second.scanId, after.nodeId)['a.mov']!.lastWrittenAt).toBeNull()
+  expect(childrenByName(first.scanId, disk.rootNode).footage).toEqual(before)
+  expect(childrenByName(second.scanId, nestedBefore.nodeId)['(small files)']).toMatchObject({ files: 1, size: 20 })
 })
 
 test('a rescan keeps the old tree and explains what came and went', async () => {
@@ -111,7 +178,15 @@ test('walk scans skip exact file paths before counting or grouping, while retain
   expect(Object.keys(top)).toEqual(['cache', 'hiberfil.sys.backup', 'footage'])
   expect(top.footage).toMatchObject({ size: 20, files: 1 })
   expect(childrenByName(outcome.scanId, top.footage!.nodeId)).toEqual({
-    '(small files)': { nodeId: expect.any(Number), name: '', kind: 'rest', size: 20, files: 1 },
+    '(small files)': {
+      nodeId: expect.any(Number),
+      name: '',
+      kind: 'rest',
+      size: 20,
+      files: 1,
+      createdAt: null,
+      lastWrittenAt: null,
+    },
   })
 })
 
