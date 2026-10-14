@@ -93,6 +93,28 @@ test('a rescan keeps the old tree and explains what came and went', async () => 
   ])
 })
 
+test('walk scans skip exact file paths before counting or grouping, while retaining similarly named files', async () => {
+  write('hiberfil.sys', 10000)
+  write('hiberfil.sys.backup', 2000)
+  write('footage/swapfile.sys', 3000)
+  const disk = store.addDisk(root)
+  store.setExcludes(
+    disk.id,
+    ['hiberfil.sys', 'footage/a.mov', 'footage/swapfile.sys', 'footage/notes.txt', 'skipme'].map((path) =>
+      join(root, path).toUpperCase().replaceAll('\\', '/'),
+    ),
+  )
+  const outcome = await scan(disk.id)
+  expect(outcome.status).toBe('complete')
+  expect(store.latestCompleteScan(disk.id)).toMatchObject({ method: 'walk', size: 5020, files: 3, dirs: 3 })
+  const top = childrenByName(outcome.scanId, disk.rootNode)
+  expect(Object.keys(top)).toEqual(['cache', 'hiberfil.sys.backup', 'footage'])
+  expect(top.footage).toMatchObject({ size: 20, files: 1 })
+  expect(childrenByName(outcome.scanId, top.footage!.nodeId)).toEqual({
+    '(small files)': { nodeId: expect.any(Number), name: '', kind: 'rest', size: 20, files: 1 },
+  })
+})
+
 test('a cancelled scan leaves no rows behind', async () => {
   const disk = store.addDisk(root)
   const controller = new AbortController()

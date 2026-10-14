@@ -306,6 +306,31 @@ test('deletePath rejects root and top-level items while accepting deeper files a
   expect(canDeletePath('D:\\Tracked', 'D:\\Tracked\\top\\nested')).toBe(true)
 })
 
+test('file exclusions recalculate historical trees, folder totals and hotspots without altering captured data', () => {
+  const f = fixture()
+  const scans = f.store.listScans(f.disk.id)
+  const entries = f.store.db.prepare('SELECT * FROM entry ORDER BY scan_id,node_id').all()
+  f.store.addExclude(f.disk.id, 'c:/FOOTAGE/cache/BLOB.bin')
+  expect(f.store.children(f.before, f.cache)).toEqual([])
+  expect(f.store.children(f.after, f.cache)).toEqual([])
+  expect(f.store.diffChildren(f.before, f.after, f.cache)).toEqual([])
+  expect(f.store.children(f.after, f.footage).map(({ name, size }) => [name, size])).toEqual([
+    ['movie.mov', 30],
+    ['Cache', 0],
+  ])
+  const comparison = f.store.compare(f.before, f.after)
+  expect(comparison.before.visible).toEqual({ size: 60, files: 2 })
+  expect(comparison.after.visible).toEqual({ size: 80, files: 2 })
+  expect(comparison.grownFolders.map(({ path, after }) => [path, after])).toEqual([['C:\\Fresh', 50]])
+  f.store.addExclude(f.disk.id, 'C:\\Footage\\Cache')
+  expect(f.store.totals(f.after).hidden).toEqual({ size: 200, files: 1 })
+  f.store.setExcludes(f.disk.id, [])
+  expect(f.store.totals(f.after).visible).toEqual({ size: 280, files: 3 })
+  expect(f.store.listScans(f.disk.id)).toEqual(scans)
+  expect(f.store.db.prepare('SELECT * FROM entry ORDER BY scan_id,node_id').all()).toEqual(entries)
+  f.store.db.close()
+})
+
 test('staging uses the latest raw subtree size even when hotspot own files or filters show less', () => {
   const f = fixture()
   const sub = f.node(f.cache, 'nested')

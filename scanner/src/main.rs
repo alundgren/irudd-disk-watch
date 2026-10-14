@@ -73,7 +73,7 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     let root = root.ok_or(
-        "usage: dw-scan <root> [--exclude <dir>]... [--min-file-size <bytes>] [--threads <n>] \
+        "usage: dw-scan <root> [--exclude <path>]... [--min-file-size <bytes>] [--threads <n>] \
          [--method auto|mft|walk] [--no-background]",
     )?;
     Ok(Args { root, excludes, min_file_size, threads, background, method })

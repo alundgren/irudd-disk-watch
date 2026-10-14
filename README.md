@@ -52,7 +52,7 @@ If you start the app from a terminal inside another Electron app, unset `ELECTRO
 
 Right-click a file, folder or Changes hotspot to hide it from views. Edit the full path or choose a containing folder, then save. The rule applies immediately to all scans of that tracked drive or folder. Settings lists the saved rules for editing or removal, and Undo restores the previous rules unless a later edit has superseded it.
 
-Excluding a folder hides it immediately from Space, Changes and the top hotspot lists, and skips that folder on future scans.
+Excluding a file or folder hides it immediately from Space, Changes and the top hotspot lists, and skips it on future scans. Settings can add either kind and remove exclusions. Small files below 1 MiB remain included in folder totals and changes but are not listed individually; there is no grouped small-files row. Old scans keep their captured totals, and an individual small file cannot be subtracted from a historical group.
 
 Files and folders at least two levels below a tracked root, such as `C:\foo\bar.txt` or `C:\foo\baz` and never `C:\` or `C:\foo`, can be queued for deletion from the row actions or context menu. The staged summary shows the queued item count and total disk space, and Execute delete removes them in parallel through `dw-scan --delete`.
 
@@ -92,5 +92,5 @@ Folder timestamps would allow a cheap partial rescan, but they are not reliable.
 - Sizes are logical file sizes, as Explorer's "Size" column shows them, not "Size on disk". Compressed files and cloud placeholders such as OneDrive files report their full size.
 - With the MFT, a file with several hard links is counted once, under the first of its names. The other names do not show in the tree. The folder walk cannot tell links apart and counts each one, which can add up to more than the drive holds. On this machine, AI model files hard-linked between two apps made the walk report 825 GB on a drive with 689 GB used.
 - The MFT scan adds NTFS metadata files such as `$MFT` at the root, and includes `System Volume Information`, which holds restore points. The folder walk can't read either. The first MFT scan after earlier walk scans therefore shows them as new.
-- Files smaller than 1 MiB are grouped per folder as "N smaller files", so a diff shows their total change but not which small file changed. These grouped rows have no individual paths to hide. Hide their containing folder instead; rules for an individual grouped file cannot subtract that file from a captured group.
+- Files smaller than 1 MiB contribute to folder totals and hotspot growth without appearing as rows. Folder totals can exceed the sum of listed files. An exact file exclusion skips even a small file on future scans, but cannot subtract it individually from an older captured group.
 - Excludes hide matching folders from existing scans immediately and skip them during future scans.

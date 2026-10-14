@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode, type MouseEvent } from 'react'
+import type { NodeKind } from '../../shared/types'
 
 const PAGE = 200
 
-interface LazyTreeProps<Row> {
+interface LazyTreeProps<Row extends { kind: NodeKind }> {
   /** Changing this key drops every loaded branch. */
   reloadKey: string
   rootId: number
@@ -15,7 +16,7 @@ interface LazyTreeProps<Row> {
   onContextMenu?(row: Row, event: MouseEvent, depth: number): void
 }
 
-export function LazyTree<Row>(props: LazyTreeProps<Row>) {
+export function LazyTree<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row>) {
   return (
     <div className="tree" role="tree">
       <Branch key={props.reloadKey} {...props} nodeId={props.rootId} depth={0} />
@@ -23,7 +24,7 @@ export function LazyTree<Row>(props: LazyTreeProps<Row>) {
   )
 }
 
-function Branch<Row>(props: LazyTreeProps<Row> & { nodeId: number; depth: number }) {
+function Branch<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { nodeId: number; depth: number }) {
   const { load, nodeId } = props
   const prepared = props.depth === 0 ? props.rootRows : undefined
   const [rows, setRows] = useState<Row[] | null>(prepared ?? null)
@@ -67,21 +68,24 @@ function Branch<Row>(props: LazyTreeProps<Row> & { nodeId: number; depth: number
         {props.emptyText}
       </div>
     )
+  const visibleRows = rows.filter((row) => row.kind !== 'rest')
   return (
     <div role="group">
-      {rows.slice(0, limit).map((row) => (
+      {visibleRows.slice(0, limit).map((row) => (
         <Node key={props.rowId(row)} {...props} row={row} siblings={rows} />
       ))}
-      {rows.length > limit && (
-        <button className="tree-more" style={indent} onClick={() => setLimit(rows.length)}>
-          Show {(rows.length - limit).toLocaleString('en-US')} more
+      {visibleRows.length > limit && (
+        <button className="tree-more" style={indent} onClick={() => setLimit(visibleRows.length)}>
+          Show {(visibleRows.length - limit).toLocaleString('en-US')} more
         </button>
       )}
     </div>
   )
 }
 
-function Node<Row>(props: LazyTreeProps<Row> & { row: Row; siblings: Row[]; depth: number }) {
+function Node<Row extends { kind: NodeKind }>(
+  props: LazyTreeProps<Row> & { row: Row; siblings: Row[]; depth: number },
+) {
   const [open, setOpen] = useState(false)
   const { row, depth } = props
   const expandable = props.canExpand(row)
