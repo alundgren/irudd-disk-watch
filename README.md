@@ -11,40 +11,46 @@ For an installed Windows app, download the x64 Setup executable from a successfu
 To build and install it locally:
 
 ```sh
-npm ci
-npm run install:local
+vp install --frozen-lockfile
+vp run install:local
 ```
 
 The install goes to `%LOCALAPPDATA%\Programs\Disk Watch`. Close an existing installed copy first, and run the installer normally as your Windows user. The app starts without elevation; its optional Restart as administrator action enables faster MFT scans.
 
-`npm run dist:win` builds `dist/Disk-Watch-VERSION-x64-Setup.exe` and a self-contained unpacked app in `dist/win-unpacked`. Build machines need Node 24 and Rust with the MSVC target. Installed machines need neither Node nor Rust nor a separate Visual C++ runtime for the scanner. The scanner links its C runtime statically.
+`vp run dist:win` builds `dist/Disk-Watch-VERSION-x64-Setup.exe` and a self-contained unpacked app in `dist/win-unpacked`. Build machines need Vite+ and Rust with the MSVC target. Installed machines need neither Node nor Rust nor a separate Visual C++ runtime for the scanner. The scanner links its C runtime statically.
 
 Install an existing build without rebuilding:
 
 ```powershell
-npm run install:local -- -SkipBuild -Installer "dist\Disk-Watch-0.1.0-x64-Setup.exe"
+vp run install:local -SkipBuild -Installer "dist\Disk-Watch-0.1.0-x64-Setup.exe"
 ```
 
-The install script also accepts an absolute `-InstallDirectory`. `npm run verify:packaged` tests the unpacked executable, its bundled scanner, branding and a real fixture scan in a hidden window with isolated temporary data. Pass another executable path after `--` to test an installed copy. The Windows workflow runs the full checks and retains the installer artifact for seven days.
+The install script also accepts an absolute `-InstallDirectory`. `vp run verify:packaged` tests the unpacked executable, its bundled scanner, branding and a real fixture scan in a hidden window with isolated temporary data. Append another executable path to test an installed copy. The Windows workflow runs the full checks and retains the installer artifact for seven days.
 
 To run from source:
 
-You need Node 24 and a Rust toolchain with the MSVC target.
+Install [Vite+](https://viteplus.dev/guide/installation) and a Rust toolchain with the MSVC target. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
 
-`npm ci` downloads the Electron development runtime through the project's postinstall hook. The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
+`vp install --frozen-lockfile` installs the committed pnpm lockfile and downloads the Electron development runtime through the project's postinstall hook. The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
 
 ```sh
-npm install
-npm run app
+vp install --frozen-lockfile
+vp run app
 ```
 
-`npm run app` builds the scanner and the app, then starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `npm run dev` starts it that way with hot reload. Data is stored in `%APPDATA%\disk-watch\disk-watch.db`.
+`vp run app` builds the scanner and the app, then starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `vp run dev` starts it that way with hot reload. Data is stored in `%APPDATA%\disk-watch\disk-watch.db`.
 
 Other scripts:
 
-- `npm test` runs the scanner and store tests against a temp folder.
-- `npm run verify` builds the app, drives it with Playwright through two scans, and saves screenshots.
-- `npm run bench -- D:\` scans a real drive twice into a temp database and prints timings.
+- `vp run test` builds the scanner and runs the scanner and store tests through Vite+ against temp folders.
+- `vp run test:rust` runs the Rust scanner tests.
+- `vp run typecheck` checks TypeScript.
+- `vp run build` builds the scanner and Electron app.
+- `vp run verify` builds the app, drives it with Playwright through two scans, and saves screenshots.
+- `vp run ready` runs tests, typecheck, UI verification, Windows packaging, and packaged verification.
+- `vp run bench D:\` scans a real drive twice into a temp database and prints timings.
+
+Use `vp run build` and `vp run dev` for this Electron app. These scripts run `electron-vite` with Vite 7, the version supported by stable electron-vite. Vite+ uses its own Vite core for the test runner. `vp build` and `vp dev` directly start Vite+'s web tooling, so use the project scripts instead.
 
 If you start the app from a terminal inside another Electron app, unset `ELECTRON_RUN_AS_NODE` first. With that variable set, Electron starts as plain Node and fails with `does not provide an export named 'BrowserWindow'`.
 

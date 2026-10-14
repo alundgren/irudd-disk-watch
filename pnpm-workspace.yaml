@@ -1,0 +1,14 @@
+overrides:
+  vitest@*: 5.0.3
+
+# Vite+ versions its bundled Vite core by the Vite+ release.
+peerDependencyRules:
+  allowedVersions:
+    'vitest>vite': 1.1.0
+    '@vitest/mocker>vite': 1.1.0
+
+allowBuilds:
+  esbuild: true
+  electron: true
+  # Only NSIS packaging is used; the Squirrel installer is unused.
+  electron-winstaller: false

@@ -9,19 +9,21 @@
   "type": "module",
   "scripts": {
     "postinstall": "install-electron",
-    "scanner": "node scripts/build-scanner.mjs",
-    "dev": "npm run scanner && electron-vite dev",
-    "build": "npm run scanner && electron-vite build",
-    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "scanner": "vp exec node scripts/cargo.mjs build --release --manifest-path scanner/Cargo.toml",
+    "dev": "vp run scanner && vp exec electron-vite dev",
+    "build": "vp run scanner && vp exec electron-vite build",
+    "dist:win": "vp run build && vp exec electron-builder --win nsis --x64 --publish never",
     "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1",
-    "verify:packaged": "node scripts/verify-packaged.mjs",
-    "start": "electron-vite preview",
-    "typecheck": "tsc -p .",
-    "test": "npm run scanner && vitest run",
-    "format": "prettier --write src scripts electron.vite.config.ts",
-    "verify": "npm run build && node scripts/verify.ts",
-    "bench": "node scripts/bench.ts",
-    "app": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-admin.ps1"
+    "verify:packaged": "vp exec node scripts/verify-packaged.mjs",
+    "start": "vp exec electron-vite preview",
+    "typecheck": "vp exec tsc -p .",
+    "test": "vp run scanner && vp test run",
+    "test:rust": "vp exec node scripts/cargo.mjs test --manifest-path scanner/Cargo.toml",
+    "format": "vp exec prettier --write src scripts electron.vite.config.ts vitest.config.ts",
+    "verify": "vp run build && vp exec node scripts/verify.ts",
+    "bench": "vp exec node scripts/bench.ts",
+    "app": "vp run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-admin.ps1",
+    "ready": "vp run test && vp run test:rust && vp run typecheck && vp run verify && vp run dist:win && vp run verify:packaged"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
@@ -37,11 +39,21 @@
     "react-dom": "^19.3.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.7",
-    "vitest": "^5.0.4"
+    "vite-plus": "1.1.0"
   },
-  "allowScripts": {
-    "esbuild@0.25.12": true,
-    "esbuild@0.28.2": true,
-    "electron@44.7.0": true
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.6.0",
+      "onFail": "download"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=24.21.0"
   }
 }

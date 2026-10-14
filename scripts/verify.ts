@@ -1,5 +1,5 @@
 // Drives the built app end to end against a temp folder and saves screenshots.
-// Usage: npm run build && node scripts/verify.ts [screenshot dir]
+// Usage: vp run verify [screenshot dir]
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

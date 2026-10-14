@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const args = ['build', '--release', '--manifest-path', 'scanner/Cargo.toml', ...process.argv.slice(2)]
+const args = process.argv.slice(2)
 const options = {
   cwd: fileURLToPath(new URL('../', import.meta.url)),
   stdio: 'inherit',

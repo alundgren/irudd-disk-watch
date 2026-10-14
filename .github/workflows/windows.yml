@@ -19,18 +19,19 @@ jobs:
       ELECTRON_ENABLE_STACK_DUMPING: '1'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: voidzero-dev/setup-vp@v1.21.1
         with:
-          node-version: 24
-          cache: npm
+          version: 1.1.0
+          run-install: false
+          cache: true
       - name: Set up stable Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - run: npm ci
-      - run: npm test
-      - run: npm run typecheck
-      - run: cargo test --manifest-path scanner/Cargo.toml
+      - run: vp install --frozen-lockfile
+      - run: vp run test
+      - run: vp run typecheck
+      - run: vp run test:rust
       - name: Check Electron runtime
         env:
           ELECTRON_RUN_AS_NODE: '1'
@@ -45,10 +46,10 @@ jobs:
           console.log('Electron Node-mode exit code:', result.status)
           if (result.error) console.error(result.error)
           process.exit(result.status ?? 1)
-          '@ | node
-      - run: npm run verify
-      - run: npm run dist:win
-      - run: npm run verify:packaged
+          '@ | vp exec node
+      - run: vp run verify
+      - run: vp run dist:win
+      - run: vp run verify:packaged
       - uses: actions/upload-artifact@v7
         with:
           name: Disk-Watch-Windows-x64

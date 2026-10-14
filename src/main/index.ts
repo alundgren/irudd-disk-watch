@@ -93,7 +93,7 @@ const elevated = new Promise<boolean>((done) =>
 /** Starts an elevated copy of the built app through UAC, then quits this one. */
 async function restartElevated() {
   if (process.env.ELECTRON_RENDERER_URL) {
-    throw new Error('Restarting as administrator needs the built app. Run "npm run app" instead.')
+    throw new Error('Restarting as administrator needs the built app. Run "vp run app" instead.')
   }
   const quote = (text: string) => `'${text.replaceAll("'", "''")}'`
   const args = app.isPackaged ? '' : ` -ArgumentList ${quote(`"${app.getAppPath()}"`)}`
