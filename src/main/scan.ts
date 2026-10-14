@@ -5,10 +5,15 @@ import type { DeleteResult, NodeKind, ScanMethod, ScanStatus, StagedDelete } fro
 import type { Store } from './store'
 
 /** One NDJSON line printed by dw-scan. Tree lines arrive in pre-order. */
+interface ScannerTimes {
+  createdAt?: number | null
+  lastWrittenAt?: number | null
+}
+
 type ScannerLine =
   | { t: 'progress'; files: number; dirs: number; bytes: number }
-  | { t: 'dir'; id: number; parent: number | null; name: string; size: number; files: number }
-  | { t: 'file'; parent: number; name: string; size: number }
+  | ({ t: 'dir'; id: number; parent: number | null; name: string; size: number; files: number } & ScannerTimes)
+  | ({ t: 'file'; parent: number; name: string; size: number } & ScannerTimes)
   | { t: 'rest'; parent: number; size: number; files: number }
   | { t: 'error'; path: string; message: string }
   | {
@@ -66,7 +71,9 @@ class Ingest {
     const { db } = store
     this.selectChildren = db.prepare(`SELECT id, kind, name FROM node WHERE parent = ?`)
     this.insertNode = db.prepare(`INSERT INTO node (parent, name, kind) VALUES (?, ?, ?)`)
-    this.insertEntry = db.prepare(`INSERT INTO entry (scan_id, node_id, size, files) VALUES (?, ?, ?, ?)`)
+    this.insertEntry = db.prepare(
+      `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
     this.insertError = db.prepare(`INSERT INTO scan_error (scan_id, path, message) VALUES (?, ?, ?)`)
   }
 
@@ -94,8 +101,8 @@ class Ingest {
     return node
   }
 
-  private entry(nodeId: number, size: number, files: number): void {
-    this.insertEntry.run(this.scanId, nodeId, size, files)
+  private entry(nodeId: number, size: number, files: number, times: ScannerTimes = {}): void {
+    this.insertEntry.run(this.scanId, nodeId, size, files, times.createdAt ?? null, times.lastWrittenAt ?? null)
     this.rows++
   }
 
@@ -104,11 +111,11 @@ class Ingest {
       case 'dir': {
         const node = line.parent === null ? this.rootNode : this.intern(this.parentNode(line.parent), 'dir', line.name)
         this.scannerToNode.set(line.id, node)
-        this.entry(node, line.size, line.files)
+        this.entry(node, line.size, line.files, line)
         return
       }
       case 'file':
-        this.entry(this.intern(this.parentNode(line.parent), 'file', line.name), line.size, 1)
+        this.entry(this.intern(this.parentNode(line.parent), 'file', line.name), line.size, 1, line)
         return
       case 'rest':
         this.entry(this.intern(this.parentNode(line.parent), 'rest', ''), line.size, line.files)

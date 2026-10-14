@@ -1,16 +1,15 @@
-import { useCallback, type MouseEvent } from 'react'
+import { useCallback, useState, type MouseEvent } from 'react'
 import type { Disk, NodeKind, ScanSummary, StagedDelete, TreeRow, ViewTotal } from '../../shared/types'
 import { api, formatBytes, formatCount } from './api'
 import { LazyTree } from './LazyTree'
-import { NodeActions } from './NodeActions'
+import { NodeAge } from './NodeAge'
+import { NodeIcon } from './NodeIcon'
 import { ScanPicker } from './ScanPicker'
 
 interface SpaceViewProps {
   disk: Disk
   scans: ScanSummary[]
-  onExclude(path: string): void
   staged: StagedDelete[]
-  onToggleDelete(item: { nodeId: number; kind: Exclude<NodeKind, 'rest'>; size: number; files: number }): void
   scanId: number
   rows: TreeRow[]
   total: ViewTotal
@@ -28,22 +27,22 @@ interface SpaceViewProps {
   ): void
 }
 
-export function SpaceView({
-  disk,
-  scans,
-  scanId,
-  rows,
-  total,
-  onPick,
-  onContext,
-  onExclude,
-  staged,
-  onToggleDelete,
-}: SpaceViewProps) {
+export function SpaceView({ disk, scans, scanId, rows, total, onPick, onContext, staged }: SpaceViewProps) {
   const scan = scans.find((s) => s.id === scanId)!
   const revision = disk.hides.revision
   const stagedIds = new Set(staged.map((item) => item.nodeId))
-  const load = useCallback((nodeId: number) => api.children(scan.id, nodeId, revision), [scan.id, revision])
+  const [sort, setSort] = useState<'size' | 'written'>('size')
+  const order = useCallback(
+    (items: TreeRow[]) =>
+      [...items].sort((a, b) =>
+        sort === 'written' ? (b.lastWrittenAt ?? 0) - (a.lastWrittenAt ?? 0) || b.size - a.size : b.size - a.size,
+      ),
+    [sort],
+  )
+  const load = useCallback(
+    async (nodeId: number) => order(await api.children(scan.id, nodeId, revision)),
+    [scan.id, revision, order],
+  )
 
   return (
     <div className="view">
@@ -58,15 +57,22 @@ export function SpaceView({
       </div>
       <div className="columns space-columns">
         <span>Name</span>
-        <span />
-        <span className="num">Size</span>
+        <button className="column-sort num" onClick={() => setSort('size')} aria-pressed={sort === 'size'}>
+          Size{sort === 'size' ? ' ↓' : ''}
+        </button>
         <span className="num">Files</span>
-        <span />
+        <button
+          className="column-sort age-heading"
+          onClick={() => setSort('written')}
+          aria-pressed={sort === 'written'}
+        >
+          Age{sort === 'written' ? ' ↓' : ''}
+        </button>
       </div>
       <LazyTree<TreeRow>
-        reloadKey={`${scan.id}-${revision}`}
+        reloadKey={`${scan.id}-${revision}-${sort}`}
         rootId={disk.rootNode}
-        rootRows={rows}
+        rootRows={order(rows)}
         onContextMenu={(row, event, depth) => {
           if (row.kind !== 'rest')
             onContext(
@@ -84,38 +90,32 @@ export function SpaceView({
         rowId={(row) => row.nodeId}
         canExpand={(row) => row.kind === 'dir'}
         emptyText="Empty folder"
-        renderRow={(row, siblings, depth) => {
+        renderRow={(row, siblings) => {
           const parentSize = siblings.reduce((sum, s) => sum + s.size, 0)
           const share = parentSize > 0 ? row.size / parentSize : 0
           const isStaged = stagedIds.has(row.nodeId)
+          const [size, unit] = formatBytes(row.size).split(' ')
           return {
             name: (
               <span className={`name kind-${row.kind}${isStaged ? ' staged-row' : ''}`}>
-                {row.name}
+                {row.kind !== 'rest' && <NodeIcon kind={row.kind} />}
+                <span className="node-name">{row.name}</span>
                 {isStaged && <span className="tag staged">queued</span>}
               </span>
             ),
             cells: (
               <>
-                <span className="bar" title={`${Math.round(share * 100)}% of the folder above`}>
-                  <span style={{ width: `${share * 100}%` }} />
+                <span className="size-cell">
+                  <span className="size-value">
+                    {size}
+                    <span className="size-unit"> {unit}</span>
+                  </span>
+                  <span className="bar" title={`${Math.round(share * 100)}% of the folder above`}>
+                    <span style={{ width: `${share * 100}%` }} />
+                  </span>
                 </span>
-                <span className="num strong">{formatBytes(row.size)}</span>
-                <span className="num muted">{formatCount(row.files)}</span>
-                {row.kind === 'rest' ? (
-                  <span />
-                ) : (
-                  <NodeActions
-                    nodeId={row.nodeId}
-                    kind={row.kind}
-                    size={row.size}
-                    files={row.files}
-                    canDelete={depth >= 1}
-                    staged={isStaged}
-                    onExclude={onExclude}
-                    onToggleDelete={onToggleDelete}
-                  />
-                )}
+                <span className="num file-count muted">{formatCount(row.files)}</span>
+                <NodeAge createdAt={row.createdAt} lastWrittenAt={row.lastWrittenAt} folder={row.kind === 'dir'} />
               </>
             ),
           }

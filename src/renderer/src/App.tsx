@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { containsPath, pathKey } from '../../shared/paths'
 import type {
   Comparison,
@@ -81,7 +81,14 @@ export function App() {
   const deletingRef = useRef(false)
   const staging = useRef(new Map<string, symbol>())
   const [showQueue, setShowQueue] = useState(false)
-  const [menu, setMenu] = useState<{ owner: HideOwner; x: number; y: number; target: ContextTarget } | null>(null)
+  const [menu, setMenu] = useState<{
+    owner: HideOwner
+    x: number
+    y: number
+    target: ContextTarget
+    origin: HTMLElement
+  } | null>(null)
+  const menuElement = useRef<HTMLDivElement>(null)
   const [dialog, setDialog] = useState<{ owner: HideOwner; path: string; original?: string } | null>(null)
   const request = useRef(0)
   const hideAction = useRef(0)
@@ -188,10 +195,21 @@ export function App() {
     const close = () => setMenu(null)
     window.addEventListener('click', close)
     window.addEventListener('blur', close)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
     return () => {
       window.removeEventListener('click', close)
       window.removeEventListener('blur', close)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
     }
+  }, [menu])
+
+  useLayoutEffect(() => {
+    if (!menu || !menuElement.current) return
+    const box = menuElement.current.getBoundingClientRect()
+    menuElement.current.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8))}px`
+    menuElement.current.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - box.height - 8))}px`
   }, [menu])
 
   const addDisk = async () => {
@@ -337,16 +355,33 @@ export function App() {
         action: ++hideAction.current,
       },
       target,
-      x: Math.min(event.clientX, window.innerWidth - 180),
-      y: Math.min(event.clientY, window.innerHeight - 100),
+      origin: event.currentTarget as HTMLElement,
+      x: event.clientX,
+      y: event.clientY,
     })
   }
   const ownsHide = (owner: HideOwner) =>
     activePage.current === owner.page && intent.current?.diskId === owner.diskId && hideAction.current === owner.action
+  const dismissMenu = () => {
+    if (menu?.origin.isConnected) menu.origin.focus()
+    setMenu(null)
+  }
+  const showFromMenu = async () => {
+    if (!menu) return
+    const { owner, target } = menu
+    dismissMenu()
+    if (!ownsHide(owner) || request.current !== owner.request) return
+    try {
+      const path = target.path ?? (await api.nodePath(target.nodeId))
+      if (ownsHide(owner) && request.current === owner.request) await api.showInExplorer(path)
+    } catch (error) {
+      if (ownsHide(owner) && request.current === owner.request) report(error)
+    }
+  }
   const openHide = async () => {
     if (!menu) return
     const { owner, target } = menu
-    setMenu((current) => (current === menu ? null : current))
+    dismissMenu()
     if (!ownsHide(owner) || request.current !== owner.request) return
     try {
       const path = target.path ?? (await api.nodePath(target.nodeId))
@@ -358,18 +393,18 @@ export function App() {
   const queueFromMenu = () => {
     if (!menu) return
     const { owner, target } = menu
-    setMenu((current) => (current === menu ? null : current))
+    dismissMenu()
     if (!target.canDelete || !target.kind || !ownsHide(owner)) return
     void toggleDelete(owner.diskId, { nodeId: target.nodeId })
   }
   const excludeFromMenu = async () => {
     if (!menu) return
     const { owner, target } = menu
-    setMenu((current) => (current === menu ? null : current))
+    dismissMenu()
     if (!target.kind || !ownsHide(owner) || request.current !== owner.request) return
     try {
       const path = target.path ?? (await api.nodePath(target.nodeId))
-      if (ownsHide(owner) && request.current === owner.request) await exclude(owner.diskId, path)
+      await exclude(owner.diskId, path)
     } catch (error) {
       if (ownsHide(owner) && request.current === owner.request) report(error)
     }
@@ -550,9 +585,7 @@ export function App() {
                 total={page.total!}
                 onPick={(scanId) => navigate({ diskId: page.disk.id, tab: 'space', scanId })}
                 onContext={context}
-                onExclude={(path) => exclude(page.disk.id, path)}
                 staged={staged}
-                onToggleDelete={(item) => toggleDelete(page.disk.id, item)}
               />
             ) : !page.comparison ? (
               <p className="empty">Changes compare two scans. Scan again later to see what came and went.</p>
@@ -573,9 +606,7 @@ export function App() {
                   })
                 }}
                 onContext={context}
-                onExclude={(path) => exclude(page.disk.id, path)}
                 staged={staged}
-                onToggleDelete={(item) => toggleDelete(page.disk.id, item)}
               />
             )}
           </>
@@ -584,15 +615,36 @@ export function App() {
       {menu && (
         <div
           className="context-menu"
+          ref={menuElement}
           role="menu"
           style={{ left: menu.x, top: menu.y }}
           onKeyDown={(event) => {
-            if (event.key === 'Escape') setMenu(null)
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              dismissMenu()
+            }
+            if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+              event.preventDefault()
+              const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button'))
+              const at = items.indexOf(document.activeElement as HTMLButtonElement)
+              const next =
+                event.key === 'Home'
+                  ? 0
+                  : event.key === 'End'
+                    ? items.length - 1
+                    : (at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length
+              items[next]?.focus()
+            }
           }}
         >
-          <button role="menuitem" autoFocus onClick={openHide}>
-            Hide…
+          <button role="menuitem" autoFocus onClick={() => void showFromMenu()}>
+            Show in Explorer
           </button>
+          {menu.target.kind && (
+            <button role="menuitem" onClick={openHide}>
+              Hide…
+            </button>
+          )}
           {menu.target.kind && (
             <button role="menuitem" onClick={() => void excludeFromMenu()}>
               Exclude

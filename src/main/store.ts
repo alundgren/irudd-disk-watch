@@ -79,6 +79,7 @@ const MIGRATIONS = [
      path TEXT NOT NULL,
      PRIMARY KEY (disk_id, path_key)
    );`,
+  'ALTER TABLE entry ADD COLUMN created_at INTEGER; ALTER TABLE entry ADD COLUMN last_written_at INTEGER;',
 ]
 
 const NTFS_METADATA: [string, NodeKind][] = [
@@ -532,7 +533,8 @@ export class Store {
     const adjustments = this.adjustments(scanId, roots)
     const rows = this.db
       .prepare(
-        `SELECT n.id AS nodeId, n.name, n.kind, e.size, e.files
+        `SELECT n.id AS nodeId, n.name, n.kind, e.size, e.files,
+                e.created_at AS createdAt, e.last_written_at AS lastWrittenAt
          FROM node n JOIN entry e ON e.scan_id = ? AND e.node_id = n.id
          WHERE n.parent = ? AND n.id NOT IN (${roots.length ? roots.join(',') : '-1'})
          ORDER BY e.size DESC`,

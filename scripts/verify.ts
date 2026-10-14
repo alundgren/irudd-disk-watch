@@ -96,6 +96,48 @@ try {
   assert.equal(await page.getByRole('treeitem', { name: /smaller files/ }).count(), 0)
   assert.equal(await page.getByText('Empty folder', { exact: true }).count(), 0, 'aggregate-only folder is not empty')
   assert.equal(await page.getByRole('treeitem', { name: /Temp/ }).count(), 0, 'excluded folder is not in the tree')
+  assert.equal(await page.locator('.row-actions').count(), 0, 'actions live in the context menu')
+  assert.ok((await page.locator('.write-age').count()) > 0, 'writes are captured and shown')
+  assert.ok((await page.locator('.creation-age').count()) > 0, 'creation ages are captured and shown')
+  await page.setViewportSize({ width: 2048, height: 900 })
+  const columns = await page.getByRole('treeitem', { name: /A001\.mov/ }).evaluate((row) => {
+    const cells = Array.from(row.children, (cell) => cell.getBoundingClientRect().width)
+    return { cells, width: row.getBoundingClientRect().width }
+  })
+  assert.ok(columns.cells[0]! / columns.width < 0.4 && columns.cells[0]! / columns.width > 0.36)
+  assert.ok(
+    columns.cells.slice(1).every((width) => width < columns.cells[0]!),
+    'name stays largest',
+  )
+  await page.screenshot({ path: join(shots, '2-space-wide.png') })
+  await page.setViewportSize({ width: 1280, height: 820 })
+  // Capture Explorer requests without opening a desktop window.
+  await app.evaluate(({ ipcMain }) => {
+    const state = globalThis as unknown as { shownPath: string | null }
+    state.shownPath = null
+    ipcMain.removeHandler('showInExplorer')
+    ipcMain.handle('showInExplorer', (event, path: string) => {
+      state.shownPath = path
+      void event.sender.executeJavaScript('window.fixtureShown = true')
+    })
+  })
+  const focusFile = page.getByRole('treeitem', { name: /A001\.mov/ })
+  await focusFile.focus()
+  await focusFile.press('Shift+F10')
+  await page.getByRole('menuitem', { name: 'Show in Explorer' }).waitFor()
+  await page.keyboard.press('Escape')
+  assert.equal(await focusFile.evaluate((row) => document.activeElement === row), true)
+  await focusFile.press('Shift+F10')
+  await page.getByRole('menuitem', { name: 'Show in Explorer' }).click()
+  await page.waitForFunction(() => !!(window as unknown as { fixtureShown?: boolean }).fixtureShown)
+  assert.equal(
+    await app.evaluate(() => (globalThis as unknown as { shownPath: string }).shownPath),
+    join(root, 'Footage', 'day1', 'A001.mov'),
+  )
+  await focusFile.click({ button: 'right', position: { x: (await focusFile.boundingBox())!.width - 1, y: 1 } })
+  const menuBounds = await page.getByRole('menu').boundingBox()
+  assert.ok(menuBounds && menuBounds.x + menuBounds.width <= 1280 && menuBounds.y + menuBounds.height <= 820)
+  await page.keyboard.press('Escape')
   await page.screenshot({ path: join(shots, '2-space.png') })
 
   write('Footage/day2/B001.mov', 60 * MB)
@@ -159,6 +201,14 @@ try {
     'Footage\\day1\n+5.00 MB',
     'Projects\\cache\n+512 KB',
   ])
+  for (const list of [page.locator('.hotspots section').nth(0), page.locator('.hotspots section').nth(1)]) {
+    const item = list.locator('li').first()
+    await item.focus()
+    await item.press('Shift+F10')
+    await page.getByRole('menuitem', { name: 'Show in Explorer' }).waitFor()
+    await page.keyboard.press('Escape')
+    assert.equal(await item.evaluate((row) => document.activeElement === row), true)
+  }
   await page.getByRole('treeitem', { name: /Projects/ }).click()
   const changedCache = page.getByRole('treeitem', { name: /cache/ })
   await changedCache.click()
@@ -325,7 +375,9 @@ try {
     [journal, 6 * MB, 1],
     [svi, 2 * MB, 1],
   ])
-    metadata.db.prepare('INSERT INTO entry VALUES(?,?,?,?)').run(metaScan, id!, size!, files!)
+    metadata.db
+      .prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,?,?)')
+      .run(metaScan, id!, size!, files!)
   metadata.db.close()
   const nestedRoot = join(root, 'Footage')
   const nestedFixture = new Store(openDb(join(userData, 'disk-watch.db')))
@@ -343,7 +395,9 @@ try {
     .prepare("UPDATE scan SET status='complete',method='walk',size=?,files=1,dirs=2 WHERE id=?")
     .run(40 * MB, nestedScan)
   for (const id of [nestedDisk.rootNode, nestedDay, nestedFile])
-    nestedFixture.db.prepare('INSERT INTO entry VALUES(?,?,?,1)').run(nestedScan, id, 40 * MB)
+    nestedFixture.db
+      .prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,?,1)')
+      .run(nestedScan, id, 40 * MB)
   nestedFixture.db.close()
   app = await electron.launch({
     executablePath: join(import.meta.dirname, '../node_modules/electron/dist/electron.exe'),
@@ -540,8 +594,8 @@ try {
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day2/ }).click()
   const fileRow = page.getByRole('treeitem', { name: /B001\.mov/ })
-  await fileRow.hover()
-  await fileRow.getByRole('button', { name: 'Exclude', exact: true }).click()
+  await fileRow.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
   await page.getByText(`${fileToExclude} is excluded.`).waitFor()
   await page.getByRole('tab', { name: 'Settings' }).click()
   await exclusion(fileToExclude).getByRole('button', { name: 'Remove', exact: true }).click()
@@ -552,8 +606,8 @@ try {
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   const day2Row = page.getByRole('treeitem', { name: /day2/ })
   await day2Row.waitFor()
-  await day2Row.hover()
-  await day2Row.getByRole('button', { name: 'Exclude', exact: true }).click()
+  await day2Row.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
   await page.getByText(`${join(root, 'Footage', 'day2')} is excluded.`).waitFor()
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day1/ }).waitFor()
@@ -592,8 +646,8 @@ try {
     state.diskDelays = [900]
   })
   const nestedDayRow = page.getByRole('treeitem', { name: /day1/ })
-  await nestedDayRow.hover()
-  await nestedDayRow.getByRole('button', { name: 'Exclude', exact: true }).click()
+  await nestedDayRow.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
   await diskButton(root).click()
   await page.getByText(`${join(nestedRoot, 'day1')} is excluded.`).waitFor()
   const excludedSnapshots = await page.evaluate(
@@ -613,8 +667,9 @@ try {
   await page.getByRole('tab', { name: 'Space' }).click()
   const footageTop = page.getByRole('treeitem', { name: /Footage/ })
   await footageTop.waitFor()
-  await footageTop.hover()
-  assert.equal(await footageTop.getByRole('button', { name: 'Queue delete', exact: true }).count(), 0)
+  await footageTop.click({ button: 'right' })
+  assert.equal(await page.getByRole('menuitem', { name: 'Queue for deletion', exact: true }).count(), 0)
+  await page.keyboard.press('Escape')
   const expand = async (name: RegExp) => {
     const row = page.getByRole('treeitem', { name })
     await row.waitFor()
@@ -623,8 +678,8 @@ try {
   }
   const queue = async (name: RegExp) => {
     const row = page.getByRole('treeitem', { name })
-    await row.hover()
-    await row.getByRole('button', { name: 'Queue delete', exact: true }).click()
+    await row.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Queue for deletion', exact: true }).click()
   }
   await expand(/Footage/)
   await queue(/day2/)
@@ -666,17 +721,18 @@ try {
   await summary.waitFor()
   assert.match(await summary.innerText(), /60.0 MB estimated/)
   await queue(/day2/)
-  await page.getByRole('treeitem', { name: /day2/ }).getByRole('button', { name: 'Unqueue', exact: true }).waitFor()
+  await page.getByRole('treeitem', { name: /day2/ }).locator('.tag.staged').waitFor()
   assert.match(await summary.innerText(), /1 item staged for deletion/)
   assert.match(await summary.innerText(), /105 MB estimated/)
   await summary.getByRole('button', { name: 'Review', exact: true }).click()
   assert.equal(await summary.locator('li').count(), 1, 'parent and child paths count once')
   await expand(/day1/)
   await queue(/A001\.mov/)
-  await page
-    .getByRole('treeitem', { name: /A001\.mov/ })
-    .getByRole('button', { name: 'Unqueue', exact: true })
-    .waitFor()
+  const queuedFile = page.getByRole('treeitem', { name: /A001\.mov/ })
+  await queuedFile.locator('.tag.staged').waitFor()
+  await queuedFile.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Remove from delete queue', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
   assert.match(await summary.innerText(), /2 items staged for deletion/)
   assert.match(await summary.innerText(), /145 MB estimated/)
   await page.screenshot({ path: join(shots, '12-staged-delete.png') })

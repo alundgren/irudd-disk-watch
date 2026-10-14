@@ -5,7 +5,7 @@
 //! folder, and the size of its unnamed data stream. Reading the table front to back
 //! is a few large sequential reads instead of one request per folder.
 
-use crate::tree::{Counters, Dir};
+use crate::tree::{Counters, Dir, Times, now_ms};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -18,6 +18,7 @@ const FIXUP_STRIDE: usize = 512;
 const CHUNK_BYTES: usize = 16 << 20;
 const IN_USE: u8 = 1;
 const IS_DIR: u8 = 2;
+const ATTR_STANDARD_INFORMATION: u32 = 0x10;
 const ATTR_FILE_NAME: u32 = 0x30;
 const ATTR_DATA: u32 = 0x80;
 const ATTR_END: u32 = 0xFFFF_FFFF;
@@ -143,22 +144,28 @@ fn resident_value(attr: &[u8]) -> Option<&[u8]> {
 
 /// Columns of what the scan keeps per MFT record, indexed by record number.
 struct Table {
+    started_at: u64,
     flags: Vec<u8>,
     seq: Vec<u16>,
     parent: Vec<u32>,
     parent_seq: Vec<u16>,
     size: Vec<u64>,
+    created_at: Vec<u64>,
+    last_written_at: Vec<u64>,
     name: Vec<Option<Box<str>>>,
 }
 
 impl Table {
     fn new(count: usize) -> Table {
         Table {
+            started_at: now_ms(),
             flags: vec![0; count],
             seq: vec![0; count],
             parent: vec![0; count],
             parent_seq: vec![0; count],
             size: vec![0; count],
+            created_at: vec![0; count],
+            last_written_at: vec![0; count],
             name: vec![None; count],
         }
     }
@@ -190,10 +197,29 @@ impl Table {
             counter.fetch_add(1, Ordering::Relaxed);
         }
         for_each_attribute(rec, |kind, attr| match kind {
+            ATTR_STANDARD_INFORMATION => self.add_times(target, attr),
             ATTR_FILE_NAME => self.add_name(target, attr),
             ATTR_DATA => self.add_data(target, attr, counters),
             _ => {}
         });
+    }
+
+    fn times(&self, index: usize) -> Times {
+        Times {
+            created_at: (self.created_at[index] > 0).then_some(self.created_at[index]),
+            last_written_at: (self.last_written_at[index] > 0).then_some(self.last_written_at[index]),
+        }
+    }
+
+    fn add_times(&mut self, target: usize, attr: &[u8]) {
+        let Some(value) = resident_value(attr) else { return };
+        if value.len() < 32 || attr[9] != 0 {
+            return;
+        }
+        let millis = |ticks: u64| ticks.checked_sub(116_444_736_000_000_000).map(|ticks| ticks / 10_000);
+        let times = Times::capture(millis(u64le(value, 0)), millis(u64le(value, 8)), self.started_at);
+        self.created_at[target] = times.created_at.unwrap_or(0);
+        self.last_written_at[target] = times.last_written_at.unwrap_or(0);
     }
 
     /// Keeps the first non-DOS name, so a file with several hard links counts once.
@@ -344,6 +370,7 @@ impl Tree<'_> {
 
     fn build(&self, dir: usize, name: String) -> Dir {
         let mut out = Dir::new(name);
+        out.times = self.table.times(dir);
         for child in self.children(dir) {
             if self.excluded.contains(&child) {
                 continue;
@@ -352,7 +379,7 @@ impl Tree<'_> {
             if self.table.is_dir(child) {
                 out.add_subdir(self.build(child, name));
             } else {
-                out.add_file(name, self.table.size[child], self.min_file_size);
+                out.add_file(name, self.table.size[child], self.min_file_size, self.table.times(child));
             }
         }
         out
@@ -471,6 +498,57 @@ mod tests {
         attr[0x30..0x38].copy_from_slice(&size.to_le_bytes());
         attr[0x40..0x44].copy_from_slice(&[0x11, 0x01, 0x10, 0x00]);
         attr
+    }
+
+    fn standard_information(created: u64, written: u64) -> Vec<u8> {
+        let mut value = vec![0u8; 48];
+        for (offset, millis) in [(0, created), (8, written)] {
+            let ticks = 116_444_736_000_000_000 + millis * 10_000;
+            value[offset..offset + 8].copy_from_slice(&ticks.to_le_bytes());
+        }
+        resident(ATTR_STANDARD_INFORMATION, &value)
+    }
+
+    #[test]
+    fn standard_times_include_small_descendant_writes_and_respect_exclusions() {
+        let now = now_ms();
+        let counters = Counters::default();
+        let mut table = Table::new(10);
+        table.flags[ROOT_RECORD] = IN_USE | IS_DIR;
+        for (id, parent, name, dir, created, written, size) in [
+            (6, ROOT_RECORD, "Media", true, now - 80_000, now - 30_000, 0),
+            (7, 6, "small.txt", false, now - 20_000, now - 1000, 1),
+            (8, 6, "future.bin", false, now - 20_000, now + 60_000, 2000),
+            (9, 6, "excluded.txt", false, now - 20_000, now - 10, 1),
+        ] {
+            table.add_record(id, &mut record(if dir { 3 } else { 1 }, 0, &[
+                file_name(parent as u64, 7, 1, name), standard_information(created, written), non_resident_data(size),
+            ]), &counters);
+        }
+        assert_eq!(table.times(8).last_written_at, None);
+        let mut tree = Tree { table: &table, edges: vec![(5, 6), (6, 7), (6, 8), (6, 9)], excluded: HashSet::new(), min_file_size: 1000 };
+        assert_eq!(tree.build(ROOT_RECORD, "C:\\".into()).times.last_written_at, Some(now - 10));
+        tree.excluded.insert(9);
+        let root = tree.build(ROOT_RECORD, "C:\\".into());
+        assert_eq!(root.times.last_written_at, Some(now - 1000));
+        assert_eq!(root.subdirs[0].times.created_at, Some(now - 80_000));
+        assert_eq!(root.subdirs[0].rest_files, 1);
+        assert_eq!(root.subdirs[0].big_files[0].times.last_written_at, None);
+    }
+
+    #[test]
+    fn missing_short_and_pre_epoch_standard_times_stay_unknown() {
+        let counters = Counters::default();
+        let mut table = Table::new(3);
+        for (id, attr) in [
+            (0, resident(ATTR_STANDARD_INFORMATION, &[0; 8])),
+            (1, resident(ATTR_STANDARD_INFORMATION, &[0; 48])),
+        ] {
+            table.add_record(id, &mut record(1, 0, &[attr]), &counters);
+            assert_eq!(table.times(id).created_at, None);
+            assert_eq!(table.times(id).last_written_at, None);
+        }
+        assert_eq!(table.times(2).last_written_at, None);
     }
 
     #[test]

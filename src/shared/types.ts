@@ -78,6 +78,9 @@ export interface TreeRow {
   kind: NodeKind
   size: number
   files: number
+  createdAt: number | null
+  /** Latest captured write in this node or its scanned descendants. */
+  lastWrittenAt: number | null
 }
 
 export interface Measure {

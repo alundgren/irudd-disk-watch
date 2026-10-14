@@ -60,7 +60,11 @@ Right-click a file, folder or Changes hotspot to hide it from views. Edit the fu
 
 Excluding a file or folder hides it immediately from Space, Changes and the top hotspot lists, and skips it on future scans. Settings can add either kind and remove exclusions. Small files below 1 MiB remain included in folder totals and changes but are not listed individually; there is no grouped small-files row. Old scans keep their captured totals, and an individual small file cannot be subtracted from a historical group.
 
-Files and folders at least two levels below a tracked root, such as `C:\foo\bar.txt` or `C:\foo\baz` and never `C:\` or `C:\foo`, can be queued for deletion from the row actions or context menu. The staged summary shows the queued item count and total disk space, and Execute delete removes them in parallel through `dw-scan --delete`.
+Right-click a row for Show in Explorer, Hide, Exclude and eligible deletion actions. Keyboard users can focus a file, folder or Changes hotspot and press the Menu key or Shift+F10. Escape returns focus to the row.
+
+Space's Age column pairs the latest write, marked with a pencil, with the smaller creation age, marked with a circled plus. Ages use seconds, minutes, hours, days, 30-day months and 365-day years. Creation belongs to the folder itself; latest write is the newest file-system write timestamp captured in that folder or its scanned descendants, including small files. Both scan methods collect these times during their existing reads. Missing or future-dated timestamps stay blank, and earlier scans need a fresh scan to capture them. View hides do not change captured timestamps; future scan exclusions remove those entries from the captured scope. These are saved metadata observations, not live write monitoring. Writer attribution is omitted because the stored metadata does not identify the writing process reliably.
+
+Files and folders at least two levels below a tracked root, such as `C:\foo\bar.txt` or `C:\foo\baz` and never `C:\` or `C:\foo`, can be queued for deletion from the context menu. The staged summary shows the queued item count and total disk space, and Execute delete removes them in parallel through `dw-scan --delete`.
 
 Known NTFS metadata files and the `$Extend` folder at a drive root are hidden by default only after a completed MFT scan confirms eligibility. Settings can restore them. `System Volume Information`, Recycle Bin and WindowsApps remain visible unless you hide them yourself.
 
