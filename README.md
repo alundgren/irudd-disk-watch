@@ -31,7 +31,7 @@ To run from source:
 
 You need Node 24 and a Rust toolchain with the MSVC target.
 
-The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
+`npm ci` downloads the Electron development runtime through the project's postinstall hook. The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
 
 ```sh
 npm install

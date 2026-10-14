@@ -8,6 +8,7 @@
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
+    "postinstall": "install-electron",
     "scanner": "node scripts/build-scanner.mjs",
     "dev": "npm run scanner && electron-vite dev",
     "build": "npm run scanner && electron-vite build",
