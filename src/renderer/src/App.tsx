@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEv
 import { containsPath, pathKey } from '../../shared/paths'
 import type {
   Comparison,
+  DeleteResult,
   Disk,
   DiskSnapshot,
   HideChange,
@@ -14,6 +15,7 @@ import type {
 } from '../../shared/types'
 import { api, formatBytes, formatCount, formatWhen } from './api'
 import { ChangesView } from './ChangesView'
+import { DeleteFailureDialog } from './DeleteFailureDialog'
 import { HideDialog } from './HideDialog'
 import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
@@ -37,6 +39,7 @@ type Navigation =
 interface Notice {
   text: string
   undo?: () => void
+  details?: () => void
 }
 
 interface HideOwner {
@@ -74,6 +77,7 @@ export function App() {
   const [navigation, setNavigation] = useState<Navigation>({ status: 'ready' })
   const [progress, setProgress] = useState<ScanProgress | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [deleteFailure, setDeleteFailure] = useState<DeleteResult | null>(null)
   const [elevated, setElevated] = useState(true)
   const [stagedByDisk, setStagedByDisk] = useState<Record<number, StagedDelete[]>>({})
   const [deletingDisk, setDeletingDisk] = useState<number | null>(null)
@@ -295,9 +299,10 @@ export function App() {
       }))
       await refresh()
       if (result.failed.length > 0) {
-        const first = result.failed[0]!
+        setDeleteFailure(result)
         setNotice({
-          text: `Removed ${result.deleted.length} of ${summary.top.length} queued paths. Failed on ${first.path}: ${first.message} Saved scans remain unchanged; retry the remaining paths or scan again.`,
+          text: `Removed ${result.deleted.length} of ${summary.top.length} queued paths. ${result.failed.length} failed. Saved scans remain unchanged; retry the remaining paths or scan again.`,
+          details: () => setDeleteFailure(result),
         })
       } else {
         if (intent.current?.diskId === diskId) setShowQueue(false)
@@ -464,6 +469,7 @@ export function App() {
           <div className="notice" role="status">
             <span>{notice.text}</span>
             {notice.undo && <button onClick={notice.undo}>Undo</button>}
+            {notice.details && <button onClick={notice.details}>View details</button>}
             <button aria-label="Dismiss" onClick={() => setNotice(null)}>
               ×
             </button>
@@ -659,6 +665,7 @@ export function App() {
           )}
         </div>
       )}
+      {deleteFailure && <DeleteFailureDialog result={deleteFailure} onClose={() => setDeleteFailure(null)} />}
       {dialog && disk && ownsHide(dialog.owner) && (
         <HideDialog
           key={dialog.owner.action}

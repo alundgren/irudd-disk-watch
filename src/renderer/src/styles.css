@@ -896,6 +896,132 @@ button.link:hover {
   align-items: center;
   margin-bottom: 8px;
 }
+
+.delete-failure-dialog {
+  width: min(1040px, 94vw);
+  max-width: 94vw;
+  max-height: 90vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.delete-failure-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.delete-failure-dialog::backdrop {
+  background: rgb(96 73 57 / 0.35);
+}
+
+.delete-failure-dialog header,
+.delete-failure-dialog footer {
+  padding: 24px 32px;
+  flex-shrink: 0;
+}
+
+.delete-failure-dialog header h2 {
+  font-size: 22px;
+}
+
+.delete-failure-dialog p {
+  margin: 8px 0 0;
+}
+
+.failure-details {
+  overflow: auto;
+  min-height: 0;
+  padding: 0 32px 24px;
+}
+
+.deletion-failure + .deletion-failure {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.deletion-failure h3 {
+  font-size: 17px;
+  margin: 20px 0 12px;
+}
+
+.deletion-failure dl {
+  margin: 0;
+}
+
+.deletion-failure .failure-context {
+  margin-top: 24px;
+}
+
+.failure-field {
+  display: grid;
+  grid-template-columns: 164px minmax(0, 1fr) auto;
+  gap: 8px 20px;
+  align-items: start;
+  padding: 10px 0;
+}
+
+.failure-field dt {
+  font-weight: 500;
+}
+
+.failure-field dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+  font-size: inherit;
+}
+
+.failure-field button {
+  font-size: 13.5px;
+  padding: 3px 10px;
+}
+
+.lock-process {
+  padding: 12px 20px;
+  border-radius: 8px;
+  background: var(--surface);
+  margin-top: 12px;
+}
+
+.failure-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.failure-dialog-actions [role='status'] {
+  flex: 1;
+  min-width: 120px;
+  font-size: 13.5px;
+}
+
+@media (max-width: 700px) {
+  .delete-failure-dialog header,
+  .delete-failure-dialog footer,
+  .failure-details {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .failure-field {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+  }
+  .failure-field dt {
+    grid-column: 1 / -1;
+  }
+  .lock-process {
+    padding: 12px;
+  }
+}
 .metadata-toggle input {
   accent-color: var(--accent);
 }

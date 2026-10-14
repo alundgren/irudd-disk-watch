@@ -29,6 +29,25 @@ pub struct Target {
     pub kind: Kind,
 }
 
+#[derive(Debug)]
+pub struct DeleteFailure {
+    pub path: PathBuf,
+    pub error: io::Error,
+}
+
+fn at(path: &Path) -> impl FnOnce(io::Error) -> DeleteFailure + '_ {
+    |error| DeleteFailure { path: path.to_path_buf(), error }
+}
+
+fn display_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+    }
+}
+
 fn is_safe_delete_target(root: &Path, path: &Path) -> bool {
     let ordinary = |path: &Path| {
         path.is_absolute() && path.components().all(|component| match component {
@@ -88,13 +107,13 @@ fn open_guard(path: &Path) -> io::Result<fs::File> {
 
 // Holding each ordinary ancestor without write/delete sharing prevents replacement
 // or reparse retargeting while descendant paths are used by the delete workers.
-fn guard_ancestors(path: &Path) -> io::Result<Vec<fs::File>> {
+fn guard_ancestors(path: &Path) -> Result<Vec<fs::File>, DeleteFailure> {
     let mut guards = Vec::new();
     for parent in path.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
-        let guard = open_guard(parent)?;
-        let meta = guard.metadata()?;
+        let guard = open_guard(parent).map_err(at(parent))?;
+        let meta = guard.metadata().map_err(at(parent))?;
         if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !meta.is_dir() {
-            return Err(io::Error::other("Deletion cannot pass through a reparse point or non-directory ancestor."));
+            return Err(at(parent)(io::Error::other("Deletion cannot pass through a reparse point or non-directory ancestor.")));
         }
         guards.push(guard);
     }
@@ -164,37 +183,37 @@ fn remove_link(path: &Path, directory: bool) -> io::Result<()> {
     }
 }
 
-fn delete_dir_recursive(path: &Path) -> io::Result<()> {
+fn delete_dir_recursive(path: &Path) -> Result<(), DeleteFailure> {
     let guard = match open_guard(path) {
         Ok(guard) => guard,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
+        Err(err) => return Err(at(path)(err)),
     };
-    let meta = guard.metadata()?;
+    let meta = guard.metadata().map_err(at(path))?;
     if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         drop(guard);
-        return remove_link(path, meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0);
+        return remove_link(path, meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0).map_err(at(path));
     }
     if !meta.is_dir() {
         drop(guard);
-        return remove_file_force(path);
+        return remove_file_force(path).map_err(at(path));
     }
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
+        Err(err) => return Err(at(path)(err)),
     };
 
     let mut files = Vec::new();
     let mut dirs = Vec::new();
-    let mut first_err: Option<io::Error> = None;
+    let mut first_err: Option<DeleteFailure> = None;
 
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
                 if first_err.is_none() {
-                    first_err = Some(err);
+                    first_err = Some(at(path)(err));
                 }
                 continue;
             }
@@ -204,7 +223,7 @@ fn delete_dir_recursive(path: &Path) -> io::Result<()> {
             Ok(meta) => meta,
             Err(err) => {
                 if first_err.is_none() {
-                    first_err = Some(err);
+                    first_err = Some(at(&child)(err));
                 }
                 continue;
             }
@@ -225,9 +244,9 @@ fn delete_dir_recursive(path: &Path) -> io::Result<()> {
                 .with_min_len(16)
                 .filter_map(|(file, link_directory)| {
                     if let Some(directory) = link_directory {
-                        remove_link(file, *directory).err()
+                        remove_link(file, *directory).map_err(at(file)).err()
                     } else {
-                        remove_file_force(file).err()
+                        remove_file_force(file).map_err(at(file)).err()
                     }
                 })
                 .reduce_with(|a, _| a)
@@ -244,42 +263,42 @@ fn delete_dir_recursive(path: &Path) -> io::Result<()> {
     }
 
     drop(guard);
-    remove_empty_dir_force(path)
+    remove_empty_dir_force(path).map_err(at(path))
 }
 
-pub fn delete_path(root: &Path, target: &Target) -> io::Result<()> {
+pub fn delete_path(root: &Path, target: &Target) -> Result<(), DeleteFailure> {
     let path = &target.path;
     if !is_safe_delete_target(root, path) {
-        return Err(io::Error::new(
+        return Err(at(path)(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Root and top-level paths cannot be deleted.",
-        ));
+        )));
     }
     let verbatim = to_verbatim_path(path);
     let _ancestors = match guard_ancestors(&verbatim) {
         Ok(guards) => guards,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
     let guard = match open_guard(&verbatim) {
         Ok(guard) => guard,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
+        Err(err) => return Err(at(&verbatim)(err)),
     };
-    let meta = guard.metadata()?;
+    let meta = guard.metadata().map_err(at(&verbatim))?;
     let directory = meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0;
     if directory != (target.kind == Kind::Dir) {
-        return Err(io::Error::other("The item type changed since it was staged. Scan again before deleting it."));
+        return Err(at(&verbatim)(io::Error::other("The item type changed since it was staged. Scan again before deleting it.")));
     }
     if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         drop(guard);
-        remove_link(&verbatim, directory)
+        remove_link(&verbatim, directory).map_err(at(&verbatim))
     } else if directory {
         drop(guard);
         delete_dir_recursive(&verbatim)
     } else {
         drop(guard);
-        remove_file_force(&verbatim)
+        remove_file_force(&verbatim).map_err(at(&verbatim))
     }
 }
 
@@ -290,12 +309,12 @@ pub fn run_delete(root: PathBuf, targets: Vec<Target>) -> i32 {
         .stack_size(16 * 1024 * 1024)
         .build()
         .expect("delete thread pool");
-    let results: Vec<(String, Result<(), String>)> = pool.install(|| {
+    let results: Vec<(String, Result<(), DeleteFailure>)> = pool.install(|| {
         targets
             .par_iter()
             .map(|target| {
                 let text = target.path.to_string_lossy().into_owned();
-                let res = delete_path(&root, target).map_err(|err| err.to_string());
+                let res = delete_path(&root, target);
                 (text, res)
             })
             .collect()
@@ -306,7 +325,13 @@ pub fn run_delete(root: PathBuf, targets: Vec<Target>) -> i32 {
     for (path, res) in results {
         match res {
             Ok(()) => deleted.push(path),
-            Err(message) => failed.push(json!({ "path": path, "message": message })),
+            Err(failure) => failed.push(json!({
+                "path": path,
+                "failedPath": display_path(&failure.path),
+                "message": failure.error.to_string(),
+                "errorCode": failure.error.raw_os_error(),
+                "lockInfo": crate::locks::diagnose(&failure.path, failure.error.raw_os_error()),
+            })),
         }
     }
 

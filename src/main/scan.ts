@@ -1,7 +1,15 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { containsPath, pathKey } from '../shared/paths.ts'
-import type { DeleteResult, NodeKind, ScanMethod, ScanStatus, StagedDelete } from '../shared/types'
+import type {
+  DeleteFailure,
+  DeleteResult,
+  LockProcess,
+  NodeKind,
+  ScanMethod,
+  ScanStatus,
+  StagedDelete,
+} from '../shared/types'
 import type { Store } from './store'
 
 /** One NDJSON line printed by dw-scan. Tree lines arrive in pre-order. */
@@ -278,7 +286,73 @@ export async function executeDelete(
             typeof row.message !== 'string'
           )
             throw new Error('Invalid deletion failure.')
-          return { path: check(row.path), message: row.message }
+          const failure: DeleteFailure = { path: check(row.path), message: row.message }
+          if ('failedPath' in row) {
+            if (
+              typeof row.failedPath !== 'string' ||
+              !(containsPath(failure.path, row.failedPath) || containsPath(row.failedPath, failure.path))
+            )
+              throw new Error('Invalid failed operation path.')
+            failure.failedPath = row.failedPath
+          }
+          if ('errorCode' in row) {
+            if (
+              row.errorCode !== null &&
+              !(
+                typeof row.errorCode === 'number' &&
+                Number.isInteger(row.errorCode) &&
+                row.errorCode >= 0 &&
+                row.errorCode <= 0xffffffff
+              )
+            )
+              throw new Error('Invalid Windows error code.')
+            failure.errorCode = row.errorCode as number | null
+          }
+          if ('lockInfo' in row) {
+            const info = row.lockInfo
+            if (
+              !info ||
+              typeof info !== 'object' ||
+              !('status' in info) ||
+              !('processes' in info) ||
+              !('note' in info) ||
+              typeof info.note !== 'string' ||
+              typeof info.status !== 'string' ||
+              !['found', 'none', 'unavailable', 'not_checked'].includes(info.status) ||
+              !Array.isArray(info.processes) ||
+              (info.status === 'found') !== info.processes.length > 0
+            )
+              throw new Error('Invalid lock lookup result.')
+            const pids = new Set<number>()
+            const processes: LockProcess[] = info.processes.map((process: unknown) => {
+              if (
+                !process ||
+                typeof process !== 'object' ||
+                !('pid' in process) ||
+                typeof process.pid !== 'number' ||
+                !Number.isInteger(process.pid) ||
+                process.pid <= 0 ||
+                process.pid > 0xffffffff ||
+                pids.has(process.pid) ||
+                !('source' in process) ||
+                typeof process.source !== 'string' ||
+                !['restart_manager', 'open_handle'].includes(process.source)
+              )
+                throw new Error('Invalid lock process.')
+              for (const key of ['processName', 'programName', 'executablePath', 'serviceName', 'note'] as const) {
+                const value = (process as Record<string, unknown>)[key]
+                if (value !== null && typeof value !== 'string') throw new Error('Invalid lock process metadata.')
+              }
+              pids.add(process.pid)
+              return process as LockProcess
+            })
+            failure.lockInfo = {
+              status: info.status as NonNullable<DeleteFailure['lockInfo']>['status'],
+              processes,
+              note: info.note,
+            }
+          }
+          return failure
         })
         if (requested.size || code !== (failed.length ? 1 : 0))
           throw new Error(`Delete exited with code ${code} without a complete result.`)
