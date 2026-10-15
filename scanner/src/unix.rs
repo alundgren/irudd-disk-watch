@@ -501,7 +501,7 @@ fn regular_observation(
                 (&mut attrs as *mut libc::attrlist).cast(),
                 buffer.as_mut_ptr().cast(),
                 std::mem::size_of_val(&buffer),
-                libc::FSOPT_NOFOLLOW as _,
+                (libc::FSOPT_NOFOLLOW | libc::FSOPT_RETURN_REALDEV) as _,
             )
         } != 0
         {
@@ -1906,6 +1906,37 @@ mod tests {
                 resolved["components"],
                 encoded(&[b"Folder".to_vec(), "é".as_bytes().to_vec()])
             );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_regular_file_mount_matches_descriptor_without_data_reads() {
+        let parent = open_root(Path::new("/bin")).unwrap();
+        let stat = stat_at(&parent, b"ls").unwrap();
+        let (observed, _, size) =
+            regular_observation(&parent, b"ls", &stat, crate::tree::now_ms()).unwrap();
+        assert!(size > 0);
+        assert_eq!(observed["device"], stat.st_dev.to_string());
+        assert_eq!(observed["mount"], mount(&parent).unwrap());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn actual_system_data_boundary_stays_distinct_from_owned_fixture() {
+        let fixture = Fixture::new();
+        let path = fixture.dir("root");
+        fs::write(path.join("unreadable"), b"fixture").unwrap();
+        fs::set_permissions(path.join("unreadable"), fs::Permissions::from_mode(0)).unwrap();
+        let parent = open_root(&path).unwrap();
+        let stat = stat_at(&parent, b"unreadable").unwrap();
+        let (observed, _, size) =
+            regular_observation(&parent, b"unreadable", &stat, crate::tree::now_ms()).unwrap();
+        assert_eq!(size, 7);
+        assert_eq!(observed["mount"], mount(&parent).unwrap());
+        let system = open_root(Path::new("/bin")).unwrap();
+        let data = open_root(Path::new("/System/Volumes/Data")).unwrap();
+        if mount(&system).unwrap() != mount(&data).unwrap() {
+            assert_ne!(mount(&system).unwrap(), observed["mount"]);
+            assert_eq!(mount(&data).unwrap(), observed["mount"]);
         }
     }
     #[test]

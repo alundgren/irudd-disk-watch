@@ -9,6 +9,7 @@ mod mft;
 mod tree;
 #[cfg(unix)]
 mod unix;
+mod volumes;
 #[cfg(windows)]
 mod walk;
 #[cfg(windows)]
