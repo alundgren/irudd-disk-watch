@@ -86,6 +86,7 @@ with tempfile.TemporaryDirectory(prefix='disk-watch-protocol-test-') as fixture:
     assert observed['capacity']['total'] > 0
     code, records = call(state, 'scan', worker, root=observed, excludes=[], minFileSize=2)
     assert code == 0 and records[1]['t'] == 'root'
+    assert 'nameBytes' not in next(row for row in records if row['t'] == 'dir' and row['parent'] is None)
     assert records[-1]['coverage'] == 'complete' and records[-1]['size'] == 11
     assert records[-1]['policy'] == 'regular-files-single-mount-no-symlink-traversal'
     assert records[-1]['skipped'] == dict(symlinks=1, special=0, mounts=0)

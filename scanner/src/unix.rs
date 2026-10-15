@@ -700,9 +700,11 @@ fn emit_node(node: &Node, parent: Option<u64>, next: &mut u64, control: &Control
     control.check()?;
     let id = *next;
     *next += 1;
-    emit(
-        &json!({"t":"dir","id":id,"parent":parent,"name":label(&node.name),"nameBytes":B64.encode(&node.name),"identity":node.identity,"size":node.size,"files":node.files,"createdAt":node.times.created_at,"lastWrittenAt":node.times.last_written_at}),
-    )?;
+    let mut record = json!({"t":"dir","id":id,"parent":parent,"name":label(&node.name),"identity":node.identity,"size":node.size,"files":node.files,"createdAt":node.times.created_at,"lastWrittenAt":node.times.last_written_at});
+    if parent.is_some() {
+        record["nameBytes"] = json!(B64.encode(&node.name));
+    }
+    emit(&record)?;
     for f in &node.big {
         control.check()?;
         emit(
@@ -769,6 +771,52 @@ fn scan(request: &Value, control: &Control) -> Result<()> {
         &json!({"t":"done","size":tree.size,"files":tree.files,"dirs":scan.dirs,"errors":scan.errors,"ms":started.elapsed().as_millis() as u64,"method":"walk","fallback":null,"policy":"regular-files-single-mount-no-symlink-traversal","skipped":{"symlinks":scan.symlinks,"special":scan.special,"mounts":scan.mounts},"coverage":if scan.errors==0 {"complete"} else {"partial"}}),
     ).map_err(NativeError::from)
 }
+#[cfg(target_os = "macos")]
+fn actual_component(parent: &File, name: &[u8]) -> Result<Vec<u8>> {
+    let name = cstr(name)?;
+    let mut attrs: libc::attrlist = unsafe { std::mem::zeroed() };
+    attrs.bitmapcount = 5;
+    attrs.commonattr = libc::ATTR_CMN_NAME;
+    let mut buffer = [0u32; 1024];
+    if unsafe {
+        libc::getattrlistat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            (&mut attrs as *mut libc::attrlist).cast(),
+            buffer.as_mut_ptr().cast(),
+            std::mem::size_of_val(&buffer),
+            libc::FSOPT_NOFOLLOW as _,
+        )
+    } != 0
+    {
+        return Err(ioerr());
+    }
+    let start = 4i64
+        .checked_add(buffer[1] as i32 as i64)
+        .ok_or("Invalid native name offset")?;
+    let length = buffer[2] as usize;
+    if start < 12
+        || length < 2
+        || start as usize + length > buffer[0] as usize
+        || buffer[0] as usize > std::mem::size_of_val(&buffer)
+    {
+        return Err("Invalid native name attribute".into());
+    }
+    let bytes = unsafe {
+        std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>().add(start as usize), length)
+    };
+    if bytes[length - 1] != 0
+        || bytes[..length - 1].contains(&0)
+        || bytes[..length - 1].contains(&b'/')
+    {
+        return Err("Invalid native name bytes".into());
+    }
+    Ok(bytes[..length - 1].to_vec())
+}
+#[cfg(target_os = "linux")]
+fn actual_component(_parent: &File, name: &[u8]) -> Result<Vec<u8>> {
+    Ok(name.to_vec())
+}
 fn resolved(request: &Value) -> Result<Value> {
     let (root_path, root, _) = checked_root(&request["root"])?;
     let parts = if request.get("components").is_some() {
@@ -792,11 +840,20 @@ fn resolved(request: &Value) -> Result<Value> {
         }
         parts
     };
+    let typed = request.get("components").is_none();
+    let mut canonical_parts = parts.clone();
     let mut current = root;
     let root_mount = mount(&current)?;
     for (i, name) in parts.iter().enumerate() {
         let stat = stat_at(&current, name)?;
         let kind = stat.st_mode & libc::S_IFMT;
+        if typed {
+            canonical_parts[i] = actual_component(&current, name)?;
+            let actual = stat_at(&current, &canonical_parts[i])?;
+            if actual.st_ino != stat.st_ino || actual.st_dev != stat.st_dev {
+                return Err("Input name changed during resolution".into());
+            }
+        }
         if kind == libc::S_IFREG && i + 1 == parts.len() {
             let (observation, _, _) =
                 regular_observation(&current, name, &stat, crate::tree::now_ms())?;
@@ -804,7 +861,7 @@ fn resolved(request: &Value) -> Result<Value> {
                 return Err("Unexpected file mount".into());
             }
             return Ok(
-                json!({"path":display(&root_path,&parts),"components":encoded(&parts),"kind":"file","identity":observation}),
+                json!({"path":display(&root_path,&canonical_parts),"components":encoded(&canonical_parts),"kind":"file","identity":observation}),
             );
         }
         if kind != libc::S_IFDIR {
@@ -817,7 +874,7 @@ fn resolved(request: &Value) -> Result<Value> {
         current = child;
     }
     Ok(
-        json!({"path":display(&root_path,&parts),"components":encoded(&parts),"kind":if current.metadata().map_err(|e|e.to_string())?.is_dir(){"dir"}else{"file"},"identity":identity(&current)?}),
+        json!({"path":display(&root_path,&canonical_parts),"components":encoded(&canonical_parts),"kind":if current.metadata().map_err(|e|e.to_string())?.is_dir(){"dir"}else{"file"},"identity":identity(&current)?}),
     )
 }
 fn policy_file(state: &Path, root: &Value) -> PathBuf {
@@ -989,37 +1046,33 @@ fn remove_entry(
         let next = guard.descend(parent.clone(), name.clone(), child.clone());
         let entries = names(&child).map_err(|e| failure(path.clone(), e))?;
         // The pool bounds active workers; descendants are discovered once, without a count pass.
-        let results = entries
-            .into_par_iter()
-            .map(|entry| {
-                let mut nested = parts.clone();
-                nested.push(entry.clone());
-                let stat = stat_at(&child, &entry)
-                    .map_err(|e| failure(display(&guard.root_path, &nested), e))?;
-                let kind = if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
-                    "dir"
-                } else {
-                    "file"
-                };
-                let result = remove_entry(
-                    child.clone(),
-                    entry,
-                    nested,
-                    leaf_identity(&stat, &guard.mount),
-                    kind,
-                    &next,
-                    control,
-                    stop,
-                );
-                if result.is_err() {
-                    stop.store(true, Ordering::SeqCst);
-                }
-                result
-            })
-            .collect::<Vec<_>>();
-        for result in results {
-            result?;
-        }
+        entries.into_par_iter().try_for_each(|entry| {
+            let mut nested = parts.clone();
+            nested.push(entry.clone());
+            let stat = stat_at(&child, &entry).map_err(|e| {
+                stop.store(true, Ordering::SeqCst);
+                failure(display(&guard.root_path, &nested), e)
+            })?;
+            let kind = if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                "dir"
+            } else {
+                "file"
+            };
+            let result = remove_entry(
+                child.clone(),
+                entry,
+                nested,
+                leaf_identity(&stat, &guard.mount),
+                kind,
+                &next,
+                control,
+                stop,
+            );
+            if result.is_err() {
+                stop.store(true, Ordering::SeqCst);
+            }
+            result
+        })?;
     }
     #[cfg(test)]
     BEFORE_UNLINK.with(|hook| {
@@ -1759,6 +1812,30 @@ mod tests {
         );
         let (file, live) = inspect(&path).unwrap();
         assert!(eligible(&file, &live).is_err());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn typed_apfs_aliases_return_actual_component_bytes() {
+        let fixture = Fixture::new();
+        let path = fixture.dir("root");
+        fixture.dir("root/Folder");
+        fs::write(path.join("Folder/FiLe"), b"data").unwrap();
+        fs::write(path.join("Folder/é"), b"data").unwrap();
+        let (_, root) = inspect(&path).unwrap();
+        if path.join("fOlDeR/fIlE").exists() {
+            let resolved = resolved(&json!({"root":root,"path":"fOlDeR/fIlE"})).unwrap();
+            assert_eq!(
+                resolved["components"],
+                encoded(&[b"Folder".to_vec(), b"FiLe".to_vec()])
+            );
+        }
+        if path.join("Folder/e\u{301}").exists() {
+            let resolved = resolved(&json!({"root":root,"path":"Folder/e\u{301}"})).unwrap();
+            assert_eq!(
+                resolved["components"],
+                encoded(&[b"Folder".to_vec(), "é".as_bytes().to_vec()])
+            );
+        }
     }
     #[test]
     fn group_writable_cleanup_root_is_refused() {
