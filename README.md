@@ -1,6 +1,6 @@
 # Disk Watch
 
-A Windows desktop app that shows where your disk space went, and what changed since the last time you looked.
+A desktop app for Windows and Mac that shows where your disk space went, and what changed since the last time you looked.
 
 You choose which drives or folders to track. One click scans all of them. Nothing runs in the background, so the app costs nothing while you work. Every scan is kept, so you can browse any earlier scan as a full tree. You can also compare any two scans to see which folders grew, which are new, and which are gone.
 
@@ -29,7 +29,7 @@ The install script also accepts an absolute `-InstallDirectory`. `vp run verify:
 
 To run from source:
 
-Install [Vite+](https://viteplus.dev/guide/global-cli) and a Rust toolchain with the MSVC target. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
+Install [Vite+](https://viteplus.dev/guide/global-cli) and Rust. Windows builds need the MSVC toolchain. Mac builds use the native ARM64 Rust toolchain and Xcode command-line tools. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
 
 `vp install --frozen-lockfile` installs the committed pnpm lockfile and downloads the Electron development runtime through the project's postinstall hook. The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
 
@@ -38,7 +38,25 @@ vp install --frozen-lockfile
 vp run app
 ```
 
-`vp run app` builds the scanner and the app, then starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `vp run dev` starts it that way with hot reload. Data is stored in `%APPDATA%\disk-watch\disk-watch.db`.
+On Windows, `vp run app` builds and starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `vp run dev` starts it that way with hot reload.
+
+On Mac, `vp run app` builds and starts Electron normally. Native scans use the Mac account's existing filesystem permissions. Choose a folder to track locally, or use Track over SSH for a Linux worker. Forward a separate profile directory when needed, for example `vp run app -- --user-data-dir=/absolute/profile-directory`. The Windows UAC launch retains those arguments too.
+
+Build a personal unsigned Mac ARM64 app without launching or installing it:
+
+```sh
+vp run dist:mac
+```
+
+The result is `dist/mac-arm64/Disk Watch.app`. The native `dw-scan` executable is bundled outside the ASAR archive in `Contents/Resources`, and the icon is generated from the existing artwork with the macOS `sips` and `iconutil` tools. This build is not signed or notarized. It does not replace an installed app. The Native workflow builds the app on an ARM64 Mac runner and uploads an archive that retains executable permissions.
+
+For SSH tracking, install a matching native worker on the remote Linux machine and make `dw-scan` available on its noninteractive SSH PATH. An existing SSH alias or `user@host` must authenticate with a key without an interactive password or host-key prompt. A generic install from a native Linux build is:
+
+```sh
+install -m 755 scanner/target/release/dw-scan /absolute/bin-directory/dw-scan
+```
+
+Use a directory already present in the remote account's SSH PATH. Then enter that destination and an absolute remote root in Track over SSH. The desktop records the worker and account identity, so changing an SSH alias does not silently retarget existing history.
 
 Other scripts:
 
@@ -46,8 +64,11 @@ Other scripts:
 - `vp run test:rust` runs the Rust scanner tests.
 - `vp run typecheck` checks TypeScript.
 - `vp run build` builds the scanner and Electron app.
-- `vp run verify` builds the app, drives it with Playwright through two scans, and saves screenshots.
-- `vp run ready` runs tests, typecheck, UI verification, Windows packaging, and packaged verification.
+- `vp run test:renderer` runs the pure renderer tests without Electron.
+- `vp run dist:mac` builds the personal unsigned ARM64 Mac app without launching it.
+- `vp run verify:windows` and its existing `verify` alias build the app, drive it with Playwright through two scans, and save screenshots.
+- `vp run verify:packaged:windows` and its existing `verify:packaged` alias test the Windows executable.
+- `vp run ready` is the Windows release check. It runs tests, typecheck, UI verification, Windows packaging, and packaged verification.
 - `vp run bench D:\` scans a real drive twice into a temp database and prints timings.
 
 Use `vp run build` and `vp run dev` for this Electron app. These scripts run `electron-vite` with Vite 7, the version supported by stable electron-vite. Vite+ uses its own Vite core for the test runner. `vp build` and `vp dev` directly start Vite+'s web tooling, so use the project scripts instead.
