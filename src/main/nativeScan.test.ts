@@ -7,6 +7,7 @@ import { runScan, executeNativeDelete, recoverNativeDelete } from './scan'
 import { workerOperation, type WorkerConnection } from './worker'
 import { nativeRoot, workerInfo } from '../shared/workerProtocol'
 import { unixLabel } from '../shared/paths'
+import { selectedVolume, verifyVolume, volumeDiscovery } from './volumes'
 
 const test = process.platform === 'win32' ? platformTest.skip : platformTest
 const owned: string[] = []
@@ -45,6 +46,24 @@ async function fixture() {
     runScan({ store, scannerExe, stateDir, diskId: disk.id, minFileSize: 10, onProgress: () => {}, signal })
   return { directory, root, outside, store, connection, disk, rootInfo, raw, scan }
 }
+
+test('mounted-root discovery decodes and reinspects captured native identity without scanning', async () => {
+  const f = await fixture()
+  try {
+    const result = volumeDiscovery(await workerOperation(f.connection, 'volumes'), f.connection.machine.os)
+    expect(result.volumes.length).toBeGreaterThan(0)
+    const choice =
+      result.volumes.find((volume) => volume.recommended) ?? result.volumes.find((volume) => volume.path === '/')
+    expect(choice).toBeDefined()
+    const saved = selectedVolume(result.volumes, { ...choice! })
+    const inspected = nativeRoot(await workerOperation(f.connection, 'inspect', { pathBytes: saved.pathBytes }))
+    verifyVolume(saved, inspected)
+    expect(f.store.listScans(f.disk.id)).toEqual([])
+    expect(f.store.getDisk(f.disk.id).cleanupEnabled).toBe(false)
+  } finally {
+    f.store.db.close()
+  }
+})
 
 test('native controller preserves exact names, timestamps, grouping, history and byte exclusions', async () => {
   const f = await fixture()
