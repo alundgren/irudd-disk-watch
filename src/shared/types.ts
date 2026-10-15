@@ -240,7 +240,7 @@ export interface DiskWatchApi {
   reinspectRoot(diskId: number): Promise<Disk>
   setCleanupEnabled(diskId: number, enabled: boolean): Promise<void>
   nodeLocation(nodeId: number): Promise<NodeLocation>
-  addExcludeNode(diskId: number, nodeId: number): Promise<void>
+  addExcludeNode(diskId: number, nodeId: number): Promise<string>
   showNode(diskId: number, nodeId: number): Promise<void>
   deleteOperations(diskId: number): Promise<DeleteOperation[]>
   recoverDelete(operationId: string): Promise<DeleteResult>

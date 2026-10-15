@@ -1,4 +1,5 @@
 import { expect, test } from 'vite-plus/test'
+import { unixLabel } from './paths'
 import { bytes, decodeFrame, framedLines, MAX_FRAME_BYTES, ScanSequence, type ScanLine } from './workerProtocol'
 
 const root: ScanLine = {
@@ -76,4 +77,25 @@ test('framing handles split UTF-8 and rejects truncated, malformed, empty or ove
     }
     await expect(read()).rejects.toThrow()
   }
+})
+
+test('grouped small files cannot collide with a raw filename whose base64 is rest', () => {
+  const sequence = new ScanSequence(true)
+  sequence.accept({
+    t: 'root',
+    root: {
+      path: '/fixture',
+      pathBytes: 'L2ZpeHR1cmU=',
+      identity: { device: '1', inode: '2' },
+      filesystem: 'fixture',
+      capacity: null,
+      observedAt: 1,
+      readOnly: false,
+    },
+  })
+  sequence.accept({ ...root, files: 3 })
+  sequence.accept({ ...leaf, name: unixLabel('rest'), nameBytes: 'rest', size: 1 })
+  sequence.accept({ t: 'rest', parent: 1, size: 2, files: 2 })
+  sequence.accept({ ...done, files: 3 })
+  expect(sequence.done).toBe(true)
 })

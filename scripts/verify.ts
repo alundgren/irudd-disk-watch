@@ -518,16 +518,31 @@ try {
   await app.evaluate(({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> })
       ._invokeHandlers
-    const state = globalThis as unknown as { hideLookups: number; hideDelays: number[]; diskDelays: number[] }
+    const state = globalThis as unknown as {
+      hideLookups: number
+      hideDelays: number[]
+      diskDelays: number[]
+      excludeDelays: number[]
+      excludeLookups: number
+    }
     state.hideLookups = 0
+    state.excludeLookups = 0
+    state.excludeDelays = []
     state.hideDelays = [350]
     state.diskDelays = [900]
-    for (const channel of ['nodePath', 'openDisk']) {
+    for (const channel of ['nodeLocation', 'openDisk', 'addExcludeNode']) {
       const original = handlers.get(channel)!
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, async (...args: unknown[]) => {
-        if (channel === 'nodePath') ++state.hideLookups
-        const delay = (channel === 'nodePath' ? state.hideDelays : state.diskDelays).shift()
+        if (channel === 'nodeLocation') ++state.hideLookups
+        if (channel === 'addExcludeNode') ++state.excludeLookups
+        const delay = (
+          channel === 'nodeLocation'
+            ? state.hideDelays
+            : channel === 'addExcludeNode'
+              ? state.excludeDelays
+              : state.diskDelays
+        ).shift()
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
         return original(...args)
       })
@@ -695,8 +710,9 @@ try {
   await page.getByRole('tab', { name: 'Space' }).click()
   await page.getByRole('treeitem', { name: /day1/ }).waitFor()
   await app.evaluate(() => {
-    const state = globalThis as unknown as { hideDelays: number[]; diskDelays: number[] }
-    state.hideDelays = [350]
+    const state = globalThis as unknown as { excludeDelays: number[]; excludeLookups: number; diskDelays: number[] }
+    state.excludeLookups = 0
+    state.excludeDelays = [350]
     state.diskDelays = [900]
   })
   const nestedDayRow = page.getByRole('treeitem', { name: /day1/ })
@@ -704,6 +720,11 @@ try {
   await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
   await diskButton(root).click()
   await page.getByText(`${join(nestedRoot, 'day1')} is excluded.`).waitFor()
+  assert.equal(
+    await app.evaluate(() => (globalThis as unknown as { excludeLookups: number }).excludeLookups),
+    1,
+    'the delayed exclusion used its actual node IPC',
+  )
   const excludedSnapshots = await page.evaluate(
     (ids) => Promise.all(ids.map((id) => window.diskWatch.openDisk(id))),
     [nestedDisk.id, parentDiskId],

@@ -249,9 +249,9 @@ export function App() {
   }
   const exclude = async (diskId: number, nodeId: number) => {
     try {
-      await api.addExcludeNode(diskId, nodeId)
+      const path = await api.addExcludeNode(diskId, nodeId)
       await refresh()
-      setNotice({ text: 'Path excluded.' })
+      setNotice({ text: `${path} is excluded.` })
     } catch (error) {
       report(error)
     }

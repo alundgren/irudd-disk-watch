@@ -262,7 +262,7 @@ export class ScanSequence {
     } else {
       const parent = this.dirs.get(line.parent!)
       if (!parent) throw new Error('Worker sent a child before its parent.')
-      const key = line.t === 'rest' ? 'rest' : this.native ? line.nameBytes! : line.name.toLowerCase()
+      const key = line.t === 'rest' ? 'rest' : this.native ? 'u:' + line.nameBytes! : 'w:' + line.name.toLowerCase()
       if (parent.names.has(key)) throw new Error('Worker sent a duplicate entry identity.')
       parent.names.add(key)
       parent.childrenSize = count(parent.childrenSize + line.size, 'directory byte total')

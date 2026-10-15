@@ -292,9 +292,9 @@ function registerIpc() {
   ipcMain.handle('addExcludeNode', (_event, diskId: number, nodeId: number) => {
     const location = store.nodeLocation(nodeId)
     if (location.diskId !== diskId) throw new Error('This node belongs to another root.')
-    return store.getDisk(diskId).targetOS === 'windows'
-      ? store.addExclude(diskId, location.path)
-      : store.addExcludeRule(diskId, location)
+    if (store.getDisk(diskId).targetOS === 'windows') store.addExclude(diskId, location.path)
+    else store.addExcludeRule(diskId, location)
+    return location.path
   })
   ipcMain.handle('openDisk', (_event, diskId: number) => {
     store.db.exec('BEGIN')
