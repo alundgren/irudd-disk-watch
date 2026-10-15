@@ -33,7 +33,9 @@ jobs:
           rustup default stable
       - run: vp install --frozen-lockfile
       - run: vp run test:rust
-      - run: vp run test:renderer
+      - run: vp run test
+      - name: Native protocol and cancellation fixtures
+        run: python3 scanner/tests/worker_smoke.py scanner/target/release/dw-scan
       - run: vp run typecheck
       - run: vp run build
         if: runner.os == 'Linux'

@@ -1,43 +1,38 @@
 import { spawn } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline'
+import {
+  ScanSequence,
+  MAX_DIAGNOSTIC_BYTES,
+  MAX_FRAME_BYTES,
+  object,
+  nativeIdentity,
+  workerInfo,
+  count,
+  type ScanLine,
+} from '../shared/workerProtocol.ts'
+import { workerFrames, workerOperation, type WorkerConnection } from './worker.ts'
 import { containsPath, pathKey } from '../shared/paths.ts'
 import type {
   DeleteFailure,
   DeleteResult,
   LockProcess,
   NodeKind,
+  NativeIdentity,
+  DeleteOperationState,
   ScanMethod,
   ScanStatus,
   StagedDelete,
 } from '../shared/types'
 import type { Store } from './store'
 
-/** One NDJSON line printed by dw-scan. Tree lines arrive in pre-order. */
-interface ScannerTimes {
-  createdAt?: number | null
-  lastWrittenAt?: number | null
-}
-
-type ScannerLine =
-  | { t: 'progress'; files: number; dirs: number; bytes: number }
-  | ({ t: 'dir'; id: number; parent: number | null; name: string; size: number; files: number } & ScannerTimes)
-  | ({ t: 'file'; parent: number; name: string; size: number } & ScannerTimes)
-  | { t: 'rest'; parent: number; size: number; files: number }
-  | { t: 'error'; path: string; message: string }
-  | {
-      t: 'done'
-      size: number
-      files: number
-      dirs: number
-      errors: number
-      ms: number
-      method: ScanMethod
-      fallback: string | null
-    }
+type ScannerTimes = { createdAt?: number | null; lastWrittenAt?: number | null; identity?: NativeIdentity }
+type ScannerLine = ScanLine
 
 export interface ScanOptions {
   store: Store
   scannerExe: string
+  stateDir?: string
   diskId: number
   minFileSize: number
   method?: ScanMethod
@@ -71,33 +66,48 @@ class Ingest {
   private readonly store: Store
   private readonly scanId: number
   private readonly rootNode: number
+  private readonly native: boolean
 
-  constructor(store: Store, scanId: number, rootNode: number) {
+  constructor(store: Store, scanId: number, rootNode: number, native = false) {
+    this.native = native
     this.store = store
     this.scanId = scanId
     this.rootNode = rootNode
     const { db } = store
-    this.selectChildren = db.prepare(`SELECT id, kind, name FROM node WHERE parent = ?`)
-    this.insertNode = db.prepare(`INSERT INTO node (parent, name, kind) VALUES (?, ?, ?)`)
+    this.selectChildren = db.prepare(`SELECT id, kind, name, name_bytes FROM node WHERE parent = ?`)
+    this.insertNode = db.prepare(
+      `INSERT INTO node (parent, name, kind, name_bytes, identity_key) VALUES (?, ?, ?, ?, ?)`,
+    )
     this.insertEntry = db.prepare(
-      `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      native
+        ? `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at, native_identity) VALUES (?, ?, ?, ?, ?, ?, ?)`
+        : `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at) VALUES (?, ?, ?, ?, ?, ?)`,
     )
     this.insertError = db.prepare(`INSERT INTO scan_error (scan_id, path, message) VALUES (?, ?, ?)`)
   }
 
-  private intern(parent: number, kind: NodeKind, name: string): number {
+  private intern(parent: number, kind: NodeKind, name: string, nameBytes?: string): number {
     let index = this.childIndex.get(parent)
     if (!index) {
       index = new Map()
-      for (const row of this.selectChildren.all(parent) as { id: number; kind: NodeKind; name: string }[]) {
-        index.set(`${row.kind}:${row.name.toLowerCase()}`, row.id)
+      for (const row of this.selectChildren.all(parent) as {
+        id: number
+        kind: NodeKind
+        name: string
+        name_bytes: string | null
+      }[]) {
+        index.set(
+          `${row.kind}:${this.native && row.kind !== 'rest' ? 'u:' + row.name_bytes : 'w:' + row.name.toLowerCase()}`,
+          row.id,
+        )
       }
       this.childIndex.set(parent, index)
     }
-    const key = `${kind}:${name.toLowerCase()}`
+    const identityKey = this.native && kind !== 'rest' ? 'u:' + nameBytes : 'w:' + name.toLowerCase()
+    const key = `${kind}:${identityKey}`
     let id = index.get(key)
     if (id === undefined) {
-      id = Number(this.insertNode.run(parent, name, kind).lastInsertRowid)
+      id = Number(this.insertNode.run(parent, name, kind, nameBytes ?? null, identityKey).lastInsertRowid)
       index.set(key, id)
     }
     return id
@@ -110,20 +120,28 @@ class Ingest {
   }
 
   private entry(nodeId: number, size: number, files: number, times: ScannerTimes = {}): void {
-    this.insertEntry.run(this.scanId, nodeId, size, files, times.createdAt ?? null, times.lastWrittenAt ?? null)
+    const values = [this.scanId, nodeId, size, files, times.createdAt ?? null, times.lastWrittenAt ?? null]
+    if (this.native) this.insertEntry.run(...values, times.identity ? JSON.stringify(times.identity) : null)
+    else this.insertEntry.run(...values)
     this.rows++
   }
 
   handle(line: Exclude<ScannerLine, { t: 'progress' } | { t: 'done' }>): void {
     switch (line.t) {
+      case 'root':
+        this.store.setScanRoot(this.scanId, line.root)
+        return
       case 'dir': {
-        const node = line.parent === null ? this.rootNode : this.intern(this.parentNode(line.parent), 'dir', line.name)
+        const node =
+          line.parent === null
+            ? this.rootNode
+            : this.intern(this.parentNode(line.parent), 'dir', line.name, line.nameBytes)
         this.scannerToNode.set(line.id, node)
         this.entry(node, line.size, line.files, line)
         return
       }
       case 'file':
-        this.entry(this.intern(this.parentNode(line.parent), 'file', line.name), line.size, 1, line)
+        this.entry(this.intern(this.parentNode(line.parent), 'file', line.name, line.nameBytes), line.size, 1, line)
         return
       case 'rest':
         this.entry(this.intern(this.parentNode(line.parent), 'rest', ''), line.size, line.files)
@@ -142,10 +160,23 @@ class Ingest {
     this.store.db
       .prepare(
         `UPDATE scan SET status = 'complete', finished_at = ?, size = ?, files = ?, dirs = ?, errors = ?,
-           duration_ms = ?, method = ?, fallback = ?
+           duration_ms = ?, method = ?, fallback = ?, coverage = ?, policy = ?, skipped = ?
          WHERE id = ?`,
       )
-      .run(Date.now(), done.size, done.files, done.dirs, done.errors, done.ms, done.method, done.fallback, this.scanId)
+      .run(
+        Date.now(),
+        done.size,
+        done.files,
+        done.dirs,
+        done.errors,
+        done.ms,
+        done.method,
+        done.fallback,
+        done.coverage ?? (done.errors ? 'partial' : 'complete'),
+        done.policy ?? null,
+        done.skipped ? JSON.stringify(done.skipped) : null,
+        this.scanId,
+      )
     if (eligible !== this.store.hideSettings(diskId).metadataEligible) {
       this.store.db.prepare('UPDATE disk SET hide_revision = hide_revision + 1 WHERE id = ?').run(diskId)
     }
@@ -153,6 +184,7 @@ class Ingest {
 }
 
 export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
+  if (options.store.getDisk(options.diskId).targetOS !== 'windows') return runNativeScan(options)
   const { store, diskId, signal } = options
   const disk = store.getDisk(diskId)
   const excludes = store.excludes(diskId)
@@ -170,7 +202,9 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   const onAbort = () => child.kill()
   signal.addEventListener('abort', onAbort)
   let stderr = ''
-  child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk))
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+    stderr = (stderr + chunk).slice(0, MAX_DIAGNOSTIC_BYTES)
+  })
   const exited = new Promise<{ code: number | null } | { error: Error }>((resolve) => {
     child.once('error', (error) => resolve({ error }))
     child.once('close', (code) => resolve({ code }))
@@ -215,7 +249,228 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     return { scanId, status, message }
   } finally {
     signal.removeEventListener('abort', onAbort)
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill()
+      await exited
+    }
   }
+}
+
+async function runNativeScan(options: ScanOptions): Promise<ScanOutcome> {
+  const { store, diskId, signal } = options
+  const disk = store.getDisk(diskId)
+  const scanId = store.beginScan(diskId, store.excludes(diskId))
+  const ingest = new Ingest(store, scanId, disk.rootNode, true)
+  const sequence = new ScanSequence(true)
+  let done: Extract<ScanLine, { t: 'done' }> | undefined
+  try {
+    if (!disk.nativeRoot) throw new Error('Inspect this native root before scanning.')
+    const rules = store.excludeRules(diskId)
+    if (rules.some((rule) => !rule.components)) throw new Error('Resolve native exclusions before scanning.')
+    const connection = { machine: disk.machine, scannerExe: options.scannerExe, stateDir: options.stateDir }
+    for await (const line of workerFrames(
+      connection,
+      'scan',
+      {
+        root: disk.nativeRoot,
+        excludes: rules.map((rule) => rule.components),
+        minFileSize: options.minFileSize,
+      },
+      signal,
+    )) {
+      if (line.t === 'result' || line.t === 'fatal') throw new Error('Unexpected native scan response.')
+      sequence.accept(line)
+      if (line.t === 'progress') {
+        options.onProgress({ phase: 'reading', ...line })
+        continue
+      }
+      if (line.t === 'done') {
+        done = line
+        continue
+      }
+      if (!store.db.isTransaction) store.db.exec('BEGIN')
+      ingest.handle(line)
+      if (ingest.rows && ingest.rows % SAVE_PROGRESS_EVERY === 0)
+        options.onProgress({ phase: 'saving', rows: ingest.rows })
+    }
+    if (!done || !sequence.done || signal.aborted)
+      throw new Error(signal.aborted ? 'Cancelled' : 'Incomplete native scan.')
+    if (!store.db.isTransaction) store.db.exec('BEGIN')
+    ingest.finish(done)
+    store.db.exec('COMMIT')
+    return { scanId, status: 'complete' }
+  } catch (error) {
+    if (store.db.isTransaction) store.db.exec('ROLLBACK')
+    const status = signal.aborted ? 'cancelled' : 'failed'
+    const message = error instanceof Error ? error.message : String(error)
+    store.endScan(scanId, status, message)
+    return { scanId, status, message }
+  }
+}
+
+function sameIdentity(a: NativeIdentity | undefined, b: NativeIdentity | undefined): boolean {
+  return !!a && !!b && a.device === b.device && a.inode === b.inode && a.mount === b.mount
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object')
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`
+  return JSON.stringify(value)
+}
+function validateReceipt(value: unknown, payload: Record<string, unknown>, connection: WorkerConnection): DeleteResult {
+  const operationId = String(payload.operationId)
+  const targets = payload.targets as StagedDelete[]
+  const receipt = object(value)
+  if (
+    receipt.operationId !== operationId ||
+    !['running', 'completed', 'interrupted', 'unknown'].includes(String(receipt.state)) ||
+    !Array.isArray(receipt.deleted) ||
+    !Array.isArray(receipt.failed)
+  )
+    throw new Error('Invalid native deletion receipt. The outcome remains uncertain.')
+  if (receipt.state !== 'unknown' || receipt.digest !== undefined) {
+    const worker = workerInfo(receipt.worker)
+    if (
+      worker.id !== connection.machine.workerId ||
+      worker.account !== connection.machine.account ||
+      worker.os !== connection.machine.os ||
+      canonicalJson(receipt.root) !== canonicalJson(payload.root)
+    )
+      throw new Error('Deletion receipt belongs to a different worker or root.')
+    const digest = createHash('sha256')
+      .update(canonicalJson({ operationId, root: payload.root, targets: payload.targets, worker }))
+      .digest('hex')
+    if (receipt.digest !== digest) throw new Error('Deletion receipt request digest does not match.')
+    count(receipt.startedAt, 'deletion start')
+    if (receipt.state === 'completed') count(receipt.finishedAt, 'deletion finish')
+  } else if (receipt.deleted.length || receipt.failed.length)
+    throw new Error('Unknown deletion receipt cannot claim outcomes.')
+  const requested = new Set(targets.map((target) => target.path))
+  const seen = new Set<string>()
+  const check = (path: unknown) => {
+    if (typeof path !== 'string' || !requested.has(path) || seen.has(path))
+      throw new Error('Deletion receipt does not match the requested targets.')
+    seen.add(path)
+    return path
+  }
+  const deleted = receipt.deleted.map(check)
+  const failed: DeleteFailure[] = receipt.failed.map((value: unknown) => {
+    const row = object(value)
+    const path = check(row.path)
+    if (
+      typeof row.message !== 'string' ||
+      typeof row.failedPath !== 'string' ||
+      row.errorDomain !== 'posix' ||
+      !(row.errorCode === null || Number.isSafeInteger(row.errorCode))
+    )
+      throw new Error('Invalid native deletion failure.')
+    return {
+      path,
+      failedPath: row.failedPath,
+      message: row.message,
+      errorCode: row.errorCode as number | null,
+      errorDomain: 'posix',
+      lockInfo: {
+        status: 'unavailable',
+        processes: [],
+        note: 'Native process lookup is unavailable. Open Unix files may remain allocated after successful unlink.',
+      },
+    }
+  })
+  if (receipt.state === 'completed' && seen.size !== requested.size)
+    throw new Error('Completed deletion receipt omits selected targets.')
+  if (receipt.state !== 'completed')
+    for (const target of targets)
+      if (!seen.has(target.path))
+        failed.push({
+          path: target.path,
+          message:
+            'Deletion outcome is uncertain. Check status, then scan again and deliberately restage unresolved items.',
+          errorDomain: 'posix',
+        })
+  return { operationId, state: receipt.state as DeleteOperationState, deleted, failed }
+}
+
+export async function executeNativeDelete(
+  store: Store,
+  connection: WorkerConnection,
+  diskId: number,
+  targets: StagedDelete[],
+): Promise<DeleteResult> {
+  const disk = store.getDisk(diskId)
+  if (!disk.cleanupEnabled || !disk.nativeRoot)
+    throw new Error('Enable cleanup for this quiescent root in Settings first.')
+  if (!targets.length || targets.length > 1000) throw new Error('Select between 1 and 1,000 deletion targets.')
+  const checked = targets.map((target) => {
+    const fresh = store.stageDelete(diskId, target.nodeId)
+    if (
+      fresh.scanId !== target.scanId ||
+      fresh.machineId !== target.machineId ||
+      fresh.kind !== target.kind ||
+      fresh.path !== target.path ||
+      fresh.size !== target.size ||
+      fresh.files !== target.files ||
+      JSON.stringify(fresh.components) !== JSON.stringify(target.components) ||
+      !sameIdentity(fresh.identity, target.identity) ||
+      !sameIdentity(fresh.rootIdentity, target.rootIdentity)
+    )
+      throw new Error('The native selection changed. Scan and stage it again.')
+    nativeIdentity(fresh.identity)
+    return fresh
+  })
+  const latest = store.latestCompleteScan(diskId)!
+  if (
+    store
+      .listDeleteOperations(diskId)
+      .some((operation) => operation.state !== 'completed' && operation.createdAt >= latest.startedAt)
+  )
+    throw new Error('Check the previous deletion status and scan again before staging a new request.')
+  const unique = [...new Map(checked.map((target) => [JSON.stringify(target.components), target])).values()]
+  const top = unique.filter(
+    (target) =>
+      !unique.some(
+        (other) =>
+          other !== target &&
+          other.components!.length < target.components!.length &&
+          other.components!.every((part, at) => target.components![at] === part),
+      ),
+  )
+  const operationId = randomUUID()
+  const payload = {
+    operationId,
+    root: top[0]!.rootObservation,
+    targets: top.map(({ path, components, kind, identity }) => ({ path, components, kind, identity })),
+  }
+  store.recordDeleteOperation({ operationId, diskId, payload, state: 'pending' })
+  try {
+    store.updateDeleteOperation(operationId, 'running')
+    const receipt = await workerOperation(connection, 'delete', payload)
+    const result = validateReceipt(receipt, payload, connection)
+    store.updateDeleteOperation(operationId, result.state!, receipt)
+    return { ...result, machineName: disk.machine.name }
+  } catch (error) {
+    store.updateDeleteOperation(operationId, 'unknown')
+    throw new Error(
+      `Deletion ${operationId} has an uncertain outcome. Check status before any new action. ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+export async function recoverNativeDelete(
+  store: Store,
+  connection: WorkerConnection,
+  operationId: string,
+): Promise<DeleteResult> {
+  const operation = store.getDeleteOperation(operationId)
+  const payload = object(operation.payload)
+  const receipt = await workerOperation(connection, 'deleteStatus', { operationId })
+  const result = validateReceipt(receipt, payload, connection)
+  store.updateDeleteOperation(operationId, result.state!, receipt)
+  return { ...result, machineName: store.getDisk(operation.diskId).machine.name }
 }
 
 export async function executeDelete(
@@ -224,6 +479,9 @@ export async function executeDelete(
   diskId: number,
   targets: StagedDelete[],
 ): Promise<DeleteResult> {
+  if (store.getDisk(diskId).targetOS !== 'windows')
+    throw new Error('Use the identity-bound native cleanup connection for this root.')
+  if (targets.length > 1000) throw new Error('Select at most 1,000 deletion targets.')
   const { root } = store.getDisk(diskId)
   const checked = targets.map((target) => {
     const latest = store.stageDelete(diskId, target.nodeId)
@@ -253,8 +511,16 @@ export async function executeDelete(
     })
     let stdout = ''
     let stderr = ''
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk))
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk))
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk
+      if (Buffer.byteLength(stdout) > MAX_FRAME_BYTES) {
+        child.kill()
+        reject(new Error('Deletion result exceeds its size limit.'))
+      }
+    })
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(0, MAX_DIAGNOSTIC_BYTES)
+    })
     child.stdin.on('error', () => {})
     child.stdin.end(JSON.stringify(top.map(({ path, kind }) => ({ path, kind }))))
     child.once('error', reject)

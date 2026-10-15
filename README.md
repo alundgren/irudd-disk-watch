@@ -50,13 +50,21 @@ vp run dist:mac
 
 The result is `dist/mac-arm64/Disk Watch.app`. The native `dw-scan` executable is bundled outside the ASAR archive in `Contents/Resources`, and the icon is generated from the existing artwork with the macOS `sips` and `iconutil` tools. This build is not signed or notarized. It does not replace an installed app. The Native workflow builds the app on an ARM64 Mac runner and uploads an archive that retains executable permissions.
 
-For SSH tracking, install a matching native worker on the remote Linux machine and make `dw-scan` available on its noninteractive SSH PATH. An existing SSH alias or `user@host` must authenticate with a key without an interactive password or host-key prompt. A generic install from a native Linux build is:
+For SSH tracking, install a matching native Linux worker at the fixed per-account path `$HOME/.local/share/disk-watch/worker-v1`. Build it on the Linux machine, or use the matching Linux workflow artifact. Existing SSH key authentication and a previously verified host key are required; the app refuses password and host-key prompts. A generic installation on that Linux account is:
 
 ```sh
-install -m 755 scanner/target/release/dw-scan /absolute/bin-directory/dw-scan
+cargo build --release --locked --manifest-path scanner/Cargo.toml
+install -d -m 700 "$HOME/.local/share/disk-watch"
+install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
 ```
 
-Use a directory already present in the remote account's SSH PATH. Then enter that destination and an absolute remote root in Track over SSH. The desktop records the worker and account identity, so changing an SSH alias does not silently retarget existing history.
+Inspect existing destination ownership and preserve an existing worker before replacing it. Then enter an SSH configuration alias or `user@host` and an absolute remote root in Track over SSH. The app uses the fixed worker command, disables forwarding and SSH connection sharing, and records worker/account identity. An alias pointing to a different machine is refused. No remote daemon or Go runtime is needed.
+
+Unix cleanup starts disabled. Enable it only for an owner-controlled root after stopping writers. Native guards reject symlink ancestors, changed object identities and mount crossings, but Unix does not provide an atomic identity-check-and-unlink operation. Concurrent hostile writers are outside the supported cleanup contract. Interrupted deletions are checked by operation ID; they are never automatically repeated. See [native behavior and limitations](scanner/README.md).
+
+The app imports legacy `disk-watch.db` history into a checked, separate `disk-watch-native.db` using a read-only SQLite backup, including committed WAL rows. The legacy file is retained. Older releases continue using the legacy history; histories diverge after downgrade and are not automatically merged. Windows histories viewed on Mac remain historical and cannot become local deletion targets.
+
+Before replacing a Windows build, use the [Windows agent verification guide](docs/windows-verification.md). It includes administrator/MFT checks and same-machine baseline comparisons; successful Mac tests do not establish Windows performance.
 
 Other scripts:
 

@@ -45,3 +45,5 @@ Use a new database basename and consistent one-time legacy import through a priv
 ## Windows release gate
 
 A changed Windows release requires real elevated MFT access, app auto-mode MFT assertions, original link/diagnostic/NSIS/UAC tests, and same-machine baseline/candidate performance measurements. Walk-only GUI checks do not establish this. Keep Windows release pending when that evidence is unavailable.
+
+Native completed scans also include `policy: "regular-files-single-mount-no-symlink-traversal"` and `skipped: { symlinks, special, mounts }`. These counters describe intentional policy skips. Permission errors and other unknown coverage gaps produce `coverage: "partial"`; Changes refuses comparisons involving partial scans. The root directory record omits component `nameBytes`, since the absolute root is carried separately in `root.pathBytes`.

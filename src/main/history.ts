@@ -53,7 +53,8 @@ function validateFinal(file: string): void {
 }
 
 function syncFile(file: string): void {
-  const fd = openSync(file, 'r')
+  // Windows FlushFileBuffers requires a writable handle for the staged file.
+  const fd = openSync(file, process.platform === 'win32' ? 'r+' : 'r')
   try {
     fsyncSync(fd)
   } finally {

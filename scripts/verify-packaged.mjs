@@ -13,7 +13,7 @@ const root = join(fixture, 'files')
 mkdirSync(userData)
 mkdirSync(root)
 writeFileSync(join(root, 'video.mov'), Buffer.alloc(2 * 1024 * 1024))
-const store = new Store(openDb(join(userData, 'disk-watch.db')))
+const store = new Store(openDb(join(userData, 'disk-watch-native.db')))
 store.addDisk(root)
 store.db.close()
 

@@ -2,10 +2,13 @@ import { parentPort, workerData } from 'node:worker_threads'
 import type { ScanEvent, ScanMethod } from '../shared/types'
 import { runScan } from './scan'
 import { openDb, Store } from './store'
+import { nativeRoot } from '../shared/workerProtocol'
+import { workerOperation } from './worker'
 
 export interface ScanWorkerData {
   dbFile: string
   scannerExe: string
+  stateDir?: string
   diskIds: number[]
   minFileSize: number
   method?: ScanMethod
@@ -27,12 +30,29 @@ for (const [index, diskId] of data.diskIds.entries()) {
   const outcome = await runScan({
     store,
     scannerExe: data.scannerExe,
+    stateDir: data.stateDir,
     diskId,
     minFileSize: data.minFileSize,
     method: data.method,
     signal: controller.signal,
     onProgress: (progress) => post({ type: 'progress', progress: { diskId, index, count, ...progress } }),
   })
+  const disk = store.getDisk(diskId)
+  if (outcome.status === 'complete' && disk.targetOS === 'windows' && disk.machine.workerId) {
+    try {
+      const observed = nativeRoot(
+        await workerOperation(
+          { machine: disk.machine, scannerExe: data.scannerExe, stateDir: data.stateDir },
+          'inspect',
+          { path: disk.root },
+          controller.signal,
+        ),
+      )
+      store.db.prepare('UPDATE disk SET native_root=? WHERE id=?').run(JSON.stringify(observed), diskId)
+    } catch {
+      /* A capacity refresh cannot invalidate a completed MFT scan. Cached observations retain their time. */
+    }
+  }
   post({ type: 'disk-finished', diskId, status: outcome.status, message: outcome.message })
 }
 store.db.close()

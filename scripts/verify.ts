@@ -28,7 +28,7 @@ write('Downloads/installer.exe', 12 * MB)
 write('Temp/scratch.bin', 30 * MB)
 write('unlisted.txt', 100)
 
-const store = new Store(openDb(join(userData, 'disk-watch.db')))
+const store = new Store(openDb(join(userData, 'disk-watch-native.db')))
 store.setExcludes(store.addDisk(root).id, [join(root, 'Temp')])
 store.addDisk(second)
 store.db.close()
@@ -114,11 +114,11 @@ try {
   await page.setViewportSize({ width: 1280, height: 820 })
   // Capture Explorer requests without opening a desktop window.
   await app.evaluate(({ ipcMain }) => {
-    const state = globalThis as unknown as { shownPath: string | null }
-    state.shownPath = null
-    ipcMain.removeHandler('showInExplorer')
-    ipcMain.handle('showInExplorer', (event, path: string) => {
-      state.shownPath = path
+    const state = globalThis as unknown as { shownNode: { diskId: number; nodeId: number } | null }
+    state.shownNode = null
+    ipcMain.removeHandler('showNode')
+    ipcMain.handle('showNode', (event, diskId: number, nodeId: number) => {
+      state.shownNode = { diskId, nodeId }
       void event.sender.executeJavaScript('window.fixtureShown = true')
     })
   })
@@ -131,10 +131,10 @@ try {
   await focusFile.press('Shift+F10')
   await page.getByRole('menuitem', { name: 'Show in Explorer' }).click()
   await page.waitForFunction(() => !!(window as unknown as { fixtureShown?: boolean }).fixtureShown)
-  assert.equal(
-    await app.evaluate(() => (globalThis as unknown as { shownPath: string }).shownPath),
-    join(root, 'Footage', 'day1', 'A001.mov'),
-  )
+  const shownNode = await app.evaluate(() => (globalThis as unknown as { shownNode: { nodeId: number } }).shownNode)
+  const revealStore = new Store(openDb(join(userData, 'disk-watch-native.db')))
+  assert.equal(revealStore.nodePath(shownNode.nodeId), join(root, 'Footage', 'day1', 'A001.mov'))
+  revealStore.db.close()
   await focusFile.click({ button: 'right', position: { x: (await focusFile.boundingBox())!.width - 1, y: 1 } })
   const menuBounds = await page.getByRole('menu').boundingBox()
   assert.ok(menuBounds && menuBounds.x + menuBounds.width <= 1280 && menuBounds.y + menuBounds.height <= 820)
@@ -408,7 +408,7 @@ try {
 
   await app.close()
   // Synthetic MFT evidence lives only in this temporary DB; no scan of Q: runs.
-  const metadata = new Store(openDb(join(userData, 'disk-watch.db')))
+  const metadata = new Store(openDb(join(userData, 'disk-watch-native.db')))
   const metaDisk = metadata.addDisk('Q:\\')
   const metaNode = (parent: number, name: string, kind: string) =>
     Number(
@@ -434,7 +434,7 @@ try {
       .run(metaScan, id!, size!, files!)
   metadata.db.close()
   const nestedRoot = join(root, 'Footage')
-  const nestedFixture = new Store(openDb(join(userData, 'disk-watch.db')))
+  const nestedFixture = new Store(openDb(join(userData, 'disk-watch-native.db')))
   const nestedDisk = nestedFixture.addDisk(nestedRoot)
   const nestedDay = Number(
     nestedFixture.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'day1','dir')").run(nestedDisk.rootNode)
