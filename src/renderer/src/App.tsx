@@ -19,8 +19,9 @@ import { DeleteFailureDialog } from './DeleteFailureDialog'
 import { HideDialog } from './HideDialog'
 import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
+import { TreemapView } from './TreemapView'
 
-type Tab = 'space' | 'changes' | 'settings'
+type Tab = 'space' | 'treemap' | 'changes' | 'settings'
 interface Intent {
   diskId: number
   tab: Tab
@@ -30,7 +31,7 @@ interface Intent {
 }
 type Page = DiskSnapshot &
   (
-    | { tab: 'space'; scanId: number | null; rows: TreeRow[]; total: ViewTotal | null }
+    | { tab: 'space' | 'treemap'; scanId: number | null; rows: TreeRow[]; total: ViewTotal | null }
     | { tab: 'changes'; comparison: Comparison | null }
     | { tab: 'settings' }
   )
@@ -116,12 +117,12 @@ export function App() {
       const revision = snapshot.disk.hides.revision
       let prepared: Page
       if (next.tab === 'settings') prepared = { ...snapshot, tab: 'settings' }
-      else if (next.tab === 'space') {
+      else if (next.tab === 'space' || next.tab === 'treemap') {
         const scan = scans.find((scan) => scan.id === next.scanId) ?? scans[0]
         const [rows, total] = scan
           ? await Promise.all([api.children(scan.id, snapshot.disk.rootNode, revision), api.totals(scan.id, revision)])
           : [[], null]
-        prepared = { ...snapshot, tab: 'space', scanId: scan?.id ?? null, rows, total }
+        prepared = { ...snapshot, tab: next.tab, scanId: scan?.id ?? null, rows, total }
       } else {
         let comparison: Comparison | null = null
         if (scans.length >= 2) {
@@ -540,7 +541,7 @@ export function App() {
               </section>
             )}
             <div className="tabs" role="tablist">
-              {(['space', 'changes', 'settings'] as const).map((tab) => (
+              {(['space', 'treemap', 'changes', 'settings'] as const).map((tab) => (
                 <button
                   key={tab}
                   role="tab"
@@ -548,7 +549,7 @@ export function App() {
                   className={page.tab === tab ? 'tab active' : 'tab'}
                   onClick={() => navigate({ ...intent.current!, diskId: page.disk.id, tab })}
                 >
-                  {{ space: 'Space', changes: 'Changes', settings: 'Settings' }[tab]}
+                  {{ space: 'Space', treemap: 'Treemap', changes: 'Changes', settings: 'Settings' }[tab]}
                 </button>
               ))}
             </div>
@@ -593,7 +594,19 @@ export function App() {
                 onContext={context}
                 staged={staged}
               />
-            ) : !page.comparison ? (
+            ) : page.tab === 'treemap' ? (
+              <TreemapView
+                key={`${page.disk.id}-${page.scanId}-${page.disk.hides.revision}`}
+                disk={page.disk}
+                scans={complete}
+                scanId={page.scanId!}
+                rows={page.rows}
+                total={page.total!}
+                onPick={(scanId) => navigate({ diskId: page.disk.id, tab: 'treemap', scanId })}
+                onContext={context}
+                staged={staged}
+              />
+            ) : !('comparison' in page) || !page.comparison ? (
               <p className="empty">Changes compare two scans. Scan again later to see what came and went.</p>
             ) : (
               <ChangesView

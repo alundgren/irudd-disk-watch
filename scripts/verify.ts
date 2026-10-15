@@ -141,6 +141,34 @@ try {
   await page.keyboard.press('Escape')
   await page.screenshot({ path: join(shots, '2-space.png') })
 
+  await page.getByRole('tab', { name: 'Treemap', exact: true }).click()
+  const map = page.getByLabel('Disk usage treemap', { exact: true })
+  await map.getByRole('button', { name: /^day1,/ }).waitFor()
+  assert.equal(await map.getByRole('button', { name: /^Temp,/ }).count(), 0, 'map respects exclusions')
+  await page.screenshot({ path: join(shots, '2-treemap.png') })
+  await map.getByRole('button', { name: /^Footage,/ }).focus()
+  await page.keyboard.press('Shift+F10')
+  assert.equal(
+    await page.getByRole('menuitem', { name: 'Queue for deletion' }).count(),
+    0,
+    'root children cannot be deleted from map',
+  )
+  await page.keyboard.press('Escape')
+  await map.getByRole('button', { name: /^day1,/ }).click()
+  await map.getByRole('button', { name: /^A001.mov,/ }).waitFor()
+  const crumbs = page.getByRole('navigation', { name: 'Treemap location' })
+  assert.equal(await crumbs.getByRole('button').count(), 3, 'nested clicks preserve parent breadcrumbs')
+  await map.getByRole('button', { name: /^A001.mov,/ }).click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Queue for deletion' }).waitFor()
+  await page.keyboard.press('Escape')
+  await crumbs.getByRole('button').first().click()
+  await map.getByRole('button', { name: /^Projects,/ }).click()
+  await map.getByRole('button', { name: /^cache,/ }).click()
+  await map.locator('.map-small-files').waitFor()
+  assert.match(await map.innerText(), /Smaller files/)
+  await page.screenshot({ path: join(shots, '2-treemap-small-files.png') })
+  await page.getByRole('tab', { name: 'Space', exact: true }).click()
+
   write('Footage/day2/B001.mov', 60 * MB)
   write('Footage/day2/B002.mov', 45 * MB)
   write('Footage/day1/A003.mov', 5 * MB)
@@ -230,6 +258,31 @@ try {
   assert.match(await page.getByRole('treeitem', { name: /cache/ }).innerText(), /1\.14 MB\s+300/)
   assert.equal(await page.getByRole('treeitem', { name: /smaller files/ }).count(), 0, 'old scans omit aggregate rows')
   await page.screenshot({ path: join(shots, '4-old-scan.png') })
+
+  await page.getByRole('tab', { name: 'Treemap', exact: true }).click()
+  await map.getByRole('button', { name: /^Downloads,/ }).waitFor()
+  await page.getByRole('button', { name: /^Scan \d/ }).click()
+  await page.getByRole('option').first().click()
+  await map.getByRole('button', { name: /^day2,/ }).waitFor()
+  assert.equal(await map.getByRole('button', { name: /^Downloads,/ }).count(), 0, 'scan selection updates map')
+  await map.getByRole('button', { name: /^day2,/ }).click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Hide…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Hide path', exact: true }).click()
+  await page.getByText('Hidden paths updated.').waitFor()
+  await map.getByRole('button', { name: /^day1,/ }).waitFor()
+  assert.equal(await map.getByRole('button', { name: /^day2,/ }).count(), 0, 'hide immediately refreshes nested map')
+  await page.getByRole('button', { name: 'Undo', exact: true }).click()
+  await map.getByRole('button', { name: /^day2,/ }).waitFor()
+  await page.setViewportSize({ width: 900, height: 650 })
+  await map.getByRole('button', { name: /^day2,/ }).waitFor()
+  await page.waitForFunction(() => {
+    const view = document.querySelector('.treemap-view')!
+    return view.scrollWidth <= view.clientWidth + 1
+  })
+  await page.screenshot({ path: join(shots, '4-treemap-narrow.png') })
+  await page.setViewportSize({ width: 1280, height: 820 })
+  await page.screenshot({ path: join(shots, '4-treemap-latest.png') })
+  await page.getByRole('tab', { name: 'Space', exact: true }).click()
 
   await page.getByRole('tab', { name: 'Settings' }).click()
   await page.getByText(join(root, 'Temp')).waitFor()
