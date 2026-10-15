@@ -79,3 +79,68 @@ export function deletePath(root: string, path: string): string {
   }
   return canonical
 }
+
+/** Encoded Unix components are identity, while labels are display text only. */
+export function unixComponent(value: string): string {
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  )
+    throw new Error('Invalid encoded Unix component.')
+  const decoded = atob(value)
+  const bytes = Uint8Array.from(decoded, (c) => c.charCodeAt(0))
+  if (
+    btoa(decoded) !== value ||
+    bytes.some((b) => b === 0 || b === 47) ||
+    (bytes.length === 1 && bytes[0] === 46) ||
+    (bytes.length === 2 && bytes[0] === 46 && bytes[1] === 46)
+  )
+    throw new Error('Invalid encoded Unix component.')
+  return value
+}
+
+export function componentKey(components: readonly string[]): string {
+  return JSON.stringify(components.map(unixComponent))
+}
+
+export function containsComponents(parent: readonly string[], child: readonly string[]): boolean {
+  componentKey(parent)
+  componentKey(child)
+  return parent.length <= child.length && parent.every((part, i) => part === child[i])
+}
+
+export function unixLabel(component: string): string {
+  const bytes = Uint8Array.from(atob(unixComponent(component)), (c) => c.charCodeAt(0))
+  let result = ''
+  for (let i = 0; i < bytes.length;) {
+    const first = bytes[i]!
+    const length =
+      first < 0x80
+        ? 1
+        : first >= 0xc2 && first <= 0xdf
+          ? 2
+          : first >= 0xe0 && first <= 0xef
+            ? 3
+            : first >= 0xf0 && first <= 0xf4
+              ? 4
+              : 0
+    let decoded: string | undefined
+    if (length && i + length <= bytes.length) {
+      try {
+        decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes.slice(i, i + length))
+      } catch {}
+    }
+    if (decoded === undefined) {
+      result += '\\x' + first.toString(16).padStart(2, '0')
+      i++
+      continue
+    }
+    if (decoded === '\\') result += '\\\\'
+    else if (first < 32 || first === 127 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(decoded)) {
+      for (const byte of bytes.slice(i, i + length)) result += '\\x' + byte.toString(16).padStart(2, '0')
+    } else result += decoded
+    i += length
+  }
+  return result
+}
