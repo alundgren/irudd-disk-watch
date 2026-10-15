@@ -826,19 +826,17 @@ try {
     ipcMain.removeHandler('executeDelete')
     ipcMain.handle('executeDelete', async (...args: unknown[]) => {
       const operation = Promise.resolve(original(...args))
-      let scanBlocked = false
-      try {
-        handlers.get('startScan')!({})
-      } catch (error) {
-        scanBlocked = String(error).includes('deletion')
-      }
-      const concurrentBlocked = Promise.resolve(original(...args)).then(
-        () => false,
-        (error) => String(error).includes('already running'),
-      )
+      const blockedByActiveOperation = (error: unknown) =>
+        String(error).includes('Wait for the current filesystem operation to finish.')
+      const scanBlocked = Promise.resolve()
+        .then(() => handlers.get('startScan')!({}))
+        .then(() => false, blockedByActiveOperation)
+      const concurrentBlocked = Promise.resolve()
+        .then(() => original(...args))
+        .then(() => false, blockedByActiveOperation)
       const result = await operation
       ;(globalThis as unknown as { deleteLocks: { scan: boolean; concurrent: boolean } }).deleteLocks = {
-        scan: scanBlocked,
+        scan: await scanBlocked,
         concurrent: await concurrentBlocked,
       }
       await new Promise((resolve) => setTimeout(resolve, 400))
