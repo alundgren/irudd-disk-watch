@@ -294,6 +294,11 @@ async function main() {
     variants.candidate.checkout.toLowerCase(),
     'Use separate checkouts.',
   )
+  assert.notEqual(
+    variants.baseline.commit,
+    variants.candidate.commit,
+    'Candidate must be the PR revision, not the baseline commit.',
+  )
   const sandbox = mkdtempSync(join(tmpdir(), 'dw-windows-regression-'))
   try {
     let root

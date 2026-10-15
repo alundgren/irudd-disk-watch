@@ -8,15 +8,18 @@ Use this procedure when verifying the native-worker changes on Windows. Keep the
 2. Use an ordinary test account that can approve elevation in that session. Record Windows build, CPU architecture, filesystem, Node/Vite+/Rust versions and elevation state locally. Record whether encryption, antivirus, compression or power settings differ between runs. Publish anonymized facts only.
 3. Create two clean, detached worktrees under a new temporary audit directory. Pin baseline to `878498541b42e7eba0c17474f63d8912a240bd0b`. Pin candidate to the exact committed integration revision under review. Keep both checkouts, build outputs, scanner executables and application profiles separate. Use the same Node runtime and Rust toolchain for both.
 
-For example, from the repository in PowerShell:
+Read the current PR head SHA and replace the explicit candidate placeholder below. Do not infer it from an arbitrary checkout HEAD. Then, from the repository in PowerShell:
 
 ```powershell
 $Audit = Join-Path $env:TEMP ('disk-watch-windows-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Audit | Out-Null
 $Baseline = Join-Path $Audit 'baseline'
 $Candidate = Join-Path $Audit 'candidate'
-$CandidateCommit = git rev-parse HEAD
-if ($LASTEXITCODE -ne 0) { throw 'Cannot identify candidate commit' }
+$CandidateCommit = 'FULL_40_CHARACTER_PR_HEAD_COMMIT'
+if ($CandidateCommit -notmatch '^[0-9a-fA-F]{40}$') { throw 'Replace the candidate placeholder with the exact head SHA from the PR' }
+if ($CandidateCommit -eq '878498541b42e7eba0c17474f63d8912a240bd0b') { throw 'Candidate must be the PR revision, not baseline' }
+git fetch origin $CandidateCommit
+if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the exact candidate commit' }
 git worktree add --detach $Baseline 878498541b42e7eba0c17474f63d8912a240bd0b
 if ($LASTEXITCODE -ne 0) { throw 'Baseline worktree failed' }
 git worktree add --detach $Candidate $CandidateCommit
