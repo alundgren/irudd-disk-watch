@@ -53,7 +53,9 @@ test('mounted-root discovery decodes and reinspects captured native identity wit
     const result = volumeDiscovery(await workerOperation(f.connection, 'volumes'), f.connection.machine.os)
     expect(result.volumes.length).toBeGreaterThan(0)
     const choice =
-      result.volumes.find((volume) => volume.recommended) ?? result.volumes.find((volume) => volume.path === '/')
+      (f.connection.machine.os === 'macos'
+        ? result.volumes.find((volume) => volume.path === '/System/Volumes/Data')
+        : undefined) ?? result.volumes.find((volume) => volume.path === '/')
     expect(choice).toBeDefined()
     const saved = selectedVolume(result.volumes, { ...choice! })
     const inspected = nativeRoot(await workerOperation(f.connection, 'inspect', { pathBytes: saved.pathBytes }))
