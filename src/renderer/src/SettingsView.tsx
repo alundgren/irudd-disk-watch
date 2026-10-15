@@ -7,6 +7,7 @@ interface SettingsViewProps {
   scans: ScanSummary[]
   scanning: boolean
   onChanged(): void
+  onReinspected(): void
   onRemoved(): void
   onHideChange(change: HideChange): Promise<void>
   onEditHide(path: string): void
@@ -19,6 +20,7 @@ export function SettingsView({
   scanning,
   onChanged,
   onRemoved,
+  onReinspected,
   onHideChange,
   onEditHide,
   onError,
@@ -88,6 +90,36 @@ export function SettingsView({
             observation and may be stale.
           </p>
         )}
+        {!isWindows(disk) && !isHistorical(disk) && (
+          <>
+            <p className="muted small">
+              After a remount or root replacement, reinspect this saved path. History stays available; cleanup is
+              disabled and requires a fresh scan.
+            </p>
+            <button
+              disabled={busy || scanning}
+              onClick={async () => {
+                if (
+                  !confirm(
+                    `Reinspect ${disk.root} on ${machineLabel(disk)}? Accept its current root identity, keep saved history and rules, clear queued deletions, and disable cleanup. Scan again before enabling deletion.`,
+                  )
+                )
+                  return
+                setBusy(true)
+                try {
+                  await api.reinspectRoot(disk.id)
+                  onReinspected()
+                } catch (error) {
+                  onError(error)
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              Reinspect root
+            </button>
+          </>
+        )}
         {isHistorical(disk) && (
           <p className="muted">Saved history only. This machine is unavailable for scanning or file actions.</p>
         )}
@@ -96,9 +128,9 @@ export function SettingsView({
         <section>
           <h2>Permanent cleanup</h2>
           <p className="muted">
-            Enable only for a writable tree you own, with other programs paused from changing it. Native checks refuse
-            changed roots, mounts and file identities. A concurrent writer can still rename an open folder. Roots
-            needing stronger protection should stay scan-only.
+            Cleanup supports APFS and ext4. Enable only for a writable tree you own, with other programs paused from
+            changing it. Native checks refuse changed roots, mounts and file identities. A concurrent writer can still
+            rename an open folder. Roots needing stronger protection should stay scan-only.
           </p>
           <label className="metadata-toggle">
             <input

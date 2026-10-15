@@ -10,6 +10,7 @@ const api: DiskWatchApi = {
   listDisks: invoke('listDisks'),
   addSshDisk: invoke('addSshDisk'),
   setCleanupEnabled: invoke('setCleanupEnabled'),
+  reinspectRoot: invoke('reinspectRoot'),
   nodeLocation: invoke('nodeLocation'),
   addExcludeNode: invoke('addExcludeNode'),
   showNode: invoke('showNode'),

@@ -667,6 +667,10 @@ export function App() {
                 scans={page.scans}
                 scanning={progress !== null || deleting}
                 onChanged={refresh}
+                onReinspected={() => {
+                  clearStaged(page.disk.id)
+                  void refresh()
+                }}
                 onRemoved={() => {
                   clearStaged(page.disk.id)
                   void refresh()

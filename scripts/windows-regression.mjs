@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const BASELINE = '878498541b42e7eba0c17474f63d8912a240bd0b'
@@ -301,6 +301,13 @@ async function main() {
       assert.ok(isAbsolute(options.get('--root')), 'Pass an explicit absolute NTFS folder.')
       root = realpathSync(options.get('--root'))
       assert.ok(statSync(root).isDirectory(), 'The representative root must be a directory.')
+      for (const protectedPath of [sandbox, variants.baseline.checkout, variants.candidate.checkout]) {
+        const child = relative(root, protectedPath)
+        assert.ok(
+          child.startsWith('..' + sep) || child === '..' || isAbsolute(child),
+          'Select a representative folder outside the audit scratch directory and both checkouts. Scanning their parent would include changing test databases/builds.',
+        )
+      }
     } else {
       root = join(sandbox, 'fixture')
       mkdirSync(join(root, 'nested', 'cache'), { recursive: true })

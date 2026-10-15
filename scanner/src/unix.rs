@@ -930,6 +930,32 @@ fn reject_extended_acl(file: &File) -> Result<()> {
     }
     result
 }
+#[cfg(target_os = "linux")]
+fn mount_filesystem<'a>(info: &'a str, id: &str) -> Option<&'a str> {
+    info.lines().find_map(|line| {
+        let (fields, filesystem) = line.split_once(" - ")?;
+        (fields.split_ascii_whitespace().next() == Some(id))
+            .then(|| filesystem.split_ascii_whitespace().next())
+            .flatten()
+    })
+}
+fn cleanup_filesystem(root: &File, live: &Value) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let supported = {
+        let _ = root;
+        live["filesystem"] == "apfs"
+    };
+    #[cfg(target_os = "linux")]
+    let supported = {
+        // The ext magic also identifies ext2/ext3; require the actual mounted type.
+        let info = fs::read_to_string("/proc/self/mountinfo").map_err(NativeError::from)?;
+        live["filesystem"] == "linux:ef53" && mount_filesystem(&info, &mount(root)?) == Some("ext4")
+    };
+    if !supported {
+        return Err("Cleanup is supported only on verified APFS and ext4 roots; this filesystem remains scan-only".into());
+    }
+    Ok(())
+}
 fn eligible(root: &File, live: &Value) -> Result<()> {
     if unsafe { libc::geteuid() } == 0 || live["path"] == "/" {
         return Err("Cleanup is unavailable for elevated accounts and filesystem roots".into());
@@ -1179,6 +1205,7 @@ fn delete(state: &Path, request: &Value, worker: &Value, control: &Control) -> R
         return Ok(receipt);
     }
     let (root_path, root, live) = checked_root(&request["root"])?;
+    cleanup_filesystem(&root, &live)?;
     eligible(&root, &live)?;
     if read_json(&policy_file(state, &request["root"]))?.is_none_or(|p| p["enabled"] != true) {
         return Err("Cleanup is disabled for this root".into());
@@ -1317,7 +1344,12 @@ pub fn dispatch(
                 let (_, file, root) = checked_root(&request["root"])?;
                 (file, root)
             } else {
-                let path = fs::canonicalize(string(request, "path")?).map_err(NativeError::from)?;
+                let selected = if request.get("pathBytes").is_some() {
+                    root_path(request)?
+                } else {
+                    PathBuf::from(string(request, "path")?)
+                };
+                let path = fs::canonicalize(selected).map_err(NativeError::from)?;
                 inspect(&path)?
             };
             Ok(Some(root))
@@ -1334,6 +1366,7 @@ pub fn dispatch(
                 .as_bool()
                 .ok_or("Expected enabled boolean")?;
             if enabled {
+                cleanup_filesystem(&file, &root)?;
                 eligible(&file, &root)?;
             }
             durable(
@@ -1387,6 +1420,44 @@ mod tests {
     }
     fn observed(root: &Value, parts: &[&[u8]]) -> Value {
         resolved(&json!({"root":root,"components":encoded(&parts.iter().map(|v|v.to_vec()).collect::<Vec<_>>())})).unwrap()
+    }
+    #[test]
+    fn deliberate_reinspection_uses_saved_root_bytes_without_old_mount_identity() {
+        let fixture = Fixture::new();
+        let path = fixture.dir("root\\name\n");
+        let (_, root) = inspect(&path).unwrap();
+        let mut stale = root.clone();
+        stale["identity"]["mount"] = json!("0");
+        assert!(checked_root(&stale).is_err());
+        let request = json!({"op":"inspect","pathBytes":root["pathBytes"]});
+        let observed = dispatch(&fixture.0, &request, &json!({}), &Control::testing())
+            .unwrap()
+            .unwrap();
+        assert_eq!(observed["pathBytes"], root["pathBytes"]);
+        assert_eq!(observed["identity"], root["identity"]);
+    }
+    #[test]
+    fn unsupported_cleanup_filesystems_are_refused() {
+        let fixture = Fixture::new();
+        let (file, mut live) = inspect(&fixture.0).unwrap();
+        cleanup_filesystem(&file, &live).unwrap();
+        live["filesystem"] = json!("unsupported");
+        assert!(
+            cleanup_filesystem(&file, &live)
+                .unwrap_err()
+                .to_string()
+                .contains("scan-only")
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_mount_type_uses_descriptor_mount_id_and_ignores_optional_fields() {
+        let info = "12 1 8:1 / /data rw shared:4 master:2 future:ok - ext4 /dev/vda rw\n13 1 8:1 / /other rw - ext3 /dev/vdb rw\n14 1 0:1 / /net rw - nfs server:/data rw";
+        assert_eq!(mount_filesystem(info, "12"), Some("ext4"));
+        assert_eq!(mount_filesystem(info, "13"), Some("ext3"));
+        assert_eq!(mount_filesystem(info, "14"), Some("nfs"));
+        assert_eq!(mount_filesystem(info, "1"), None);
+        assert_eq!(mount_filesystem("12 malformed", "12"), None);
     }
     #[test]
     fn canonical_label_corpus_matches_controller() {

@@ -47,6 +47,7 @@ let activeScan: ActiveScan | null = null
 let activeDelete: Promise<DeleteResult> | null = null
 let localMachine: Promise<Machine> | undefined
 let restarting = false
+let activeSetup = false
 
 function connection(machine: Machine): WorkerConnection {
   return { machine, scannerExe, stateDir }
@@ -56,13 +57,25 @@ function connectionFor(diskId: number): WorkerConnection {
 }
 function toDisk(row: DiskRow): Disk {
   const latestScan = store.latestCompleteScan(row.id)
+  const captured = latestScan?.rootObservation
+  const configured = row.nativeRoot
+  const observed =
+    captured &&
+    configured &&
+    captured.pathBytes === configured.pathBytes &&
+    captured.identity.device === configured.identity.device &&
+    captured.identity.inode === configured.identity.inode &&
+    captured.identity.mount === configured.identity.mount &&
+    captured.observedAt >= configured.observedAt
+      ? captured
+      : (configured ?? captured)
   return {
     ...row,
-    nativeRoot: latestScan?.rootObservation ?? row.nativeRoot,
+    nativeRoot: observed,
     excludes: store.excludes(row.id),
     excludeRules: store.excludeRules(row.id),
     latestScan,
-    capacity: latestScan?.rootObservation?.capacity ?? row.nativeRoot?.capacity ?? null,
+    capacity: observed?.capacity ?? null,
     hides: store.hideSettings(row.id),
   }
 }
@@ -70,7 +83,17 @@ function send(event: ScanEvent) {
   window?.webContents.send('scan-event', event)
 }
 function idle() {
-  if (activeScan || activeDelete || restarting) throw new Error('Wait for the current filesystem operation to finish.')
+  if (activeScan || activeDelete || restarting || activeSetup)
+    throw new Error('Wait for the current filesystem operation to finish.')
+}
+async function setupOperation<T>(run: () => Promise<T>): Promise<T> {
+  idle()
+  activeSetup = true
+  try {
+    return await run()
+  } finally {
+    activeSetup = false
+  }
 }
 async function ensureLocalMachine(): Promise<Machine> {
   localMachine ??= (async () => {
@@ -94,6 +117,17 @@ async function ensureLocalMachine(): Promise<Machine> {
 async function inspectRoot(machine: Machine, path: string) {
   return nativeRoot(await workerOperation(connection(machine), 'inspect', { path }))
 }
+function assertBinding(disk: DiskRow): void {
+  const current = store.getDisk(disk.id)
+  if (
+    current.rootNode !== disk.rootNode ||
+    current.machineId !== disk.machineId ||
+    current.machine.workerId !== disk.machine.workerId ||
+    current.machine.account !== disk.machine.account ||
+    JSON.stringify(current.nativeRoot) !== JSON.stringify(disk.nativeRoot)
+  )
+    throw new Error('The root binding changed while the operation was running. Try again against the current root.')
+}
 async function resolveRule(diskId: number, path?: string, components?: string[]): Promise<PathRule> {
   const disk = store.getDisk(diskId)
   if (!disk.nativeRoot) throw new Error('This root has no native observation.')
@@ -103,6 +137,7 @@ async function resolveRule(diskId: number, path?: string, components?: string[])
       ...(components ? { components } : { path }),
     }),
   )
+  assertBinding(disk)
   if (typeof value.path !== 'string' || !Array.isArray(value.components))
     throw new Error('Invalid native path resolution.')
   const parts = value.components.map((part) => bytes(part, true))
@@ -190,31 +225,34 @@ async function pickFolder(title: string, defaultPath?: string) {
 }
 function registerIpc() {
   ipcMain.handle('listDisks', () => store.listDisks().map(toDisk))
-  ipcMain.handle('pickAndAddDisk', async () => {
-    idle()
-    const path = await pickFolder('Choose a drive or folder to track')
-    if (!path) return null
-    const machine = await ensureLocalMachine()
-    const observed = await inspectRoot(machine, path)
-    const disk = hostOS === 'windows' ? store.addDisk(path, machine.id) : store.addNativeDisk(machine.id, observed)
-    if (hostOS === 'windows')
-      store.db.prepare('UPDATE disk SET native_root=? WHERE id=?').run(JSON.stringify(observed), disk.id)
-    return toDisk(store.getDisk(disk.id))
-  })
-  ipcMain.handle('addSshDisk', async (_event, destination: string, path: string) => {
-    idle()
-    if (typeof destination !== 'string' || typeof path !== 'string')
-      throw new Error('Enter an SSH destination and root path.')
-    const provisional: Machine = { id: randomUUID(), kind: 'ssh', os: 'linux', name: destination, destination }
-    const observed = workerInfo(await workerOperation(connection(provisional), 'hello'))
-    const existing = store
-      .listMachines()
-      .find(
-        (machine) => machine.kind === 'ssh' && machine.workerId === observed.id && machine.account === observed.account,
-      )
-    const machine = store.upsertMachine(bindWorker(existing ? { ...existing, destination } : provisional, observed))
-    return toDisk(store.addNativeDisk(machine.id, await inspectRoot(machine, path)))
-  })
+  ipcMain.handle('pickAndAddDisk', () =>
+    setupOperation(async () => {
+      const path = await pickFolder('Choose a drive or folder to track')
+      if (!path) return null
+      const machine = await ensureLocalMachine()
+      const observed = await inspectRoot(machine, path)
+      const disk = hostOS === 'windows' ? store.addDisk(path, machine.id) : store.addNativeDisk(machine.id, observed)
+      if (hostOS === 'windows')
+        store.db.prepare('UPDATE disk SET native_root=? WHERE id=?').run(JSON.stringify(observed), disk.id)
+      return toDisk(store.getDisk(disk.id))
+    }),
+  )
+  ipcMain.handle('addSshDisk', (_event, destination: string, path: string) =>
+    setupOperation(async () => {
+      if (typeof destination !== 'string' || typeof path !== 'string')
+        throw new Error('Enter an SSH destination and root path.')
+      const provisional: Machine = { id: randomUUID(), kind: 'ssh', os: 'linux', name: destination, destination }
+      const observed = workerInfo(await workerOperation(connection(provisional), 'hello'))
+      const existing = store
+        .listMachines()
+        .find(
+          (machine) =>
+            machine.kind === 'ssh' && machine.workerId === observed.id && machine.account === observed.account,
+        )
+      const machine = store.upsertMachine(bindWorker(existing ? { ...existing, destination } : provisional, observed))
+      return toDisk(store.addNativeDisk(machine.id, await inspectRoot(machine, path)))
+    }),
+  )
   ipcMain.handle('removeDisk', (_event, diskId: number) => {
     idle()
     return store.removeDisk(diskId)
@@ -245,10 +283,12 @@ function registerIpc() {
     })
     return store.setExcludeRules(diskId, retained)
   })
-  ipcMain.handle('addExclude', async (_event, diskId: number, path: string) => {
-    if (store.getDisk(diskId).targetOS === 'windows') return store.addExclude(diskId, path)
-    return store.addExcludeRule(diskId, await resolveRule(diskId, path))
-  })
+  ipcMain.handle('addExclude', (_event, diskId: number, path: string) =>
+    setupOperation(async () => {
+      if (store.getDisk(diskId).targetOS === 'windows') return store.addExclude(diskId, path)
+      return store.addExcludeRule(diskId, await resolveRule(diskId, path))
+    }),
+  )
   ipcMain.handle('addExcludeNode', (_event, diskId: number, nodeId: number) => {
     const location = store.nodeLocation(nodeId)
     if (location.diskId !== diskId) throw new Error('This node belongs to another root.')
@@ -267,26 +307,28 @@ function registerIpc() {
       throw error
     }
   })
-  ipcMain.handle('changeHides', async (_event, diskId: number, change: HideChange) => {
-    if (store.getDisk(diskId).targetOS === 'windows' || change.type === 'metadata')
-      return store.changeHides(diskId, change)
-    const existing = store.hideSettings(diskId).rules?.find((rule) => rule.path === change.path)
-    const selected = change.components
-      ? { path: change.path, components: change.components }
-      : (existing ?? (await resolveRule(diskId, change.path)))
-    if (change.type === 'replace') {
-      const replacement = change.replacementComponents
-        ? { path: change.replacement, components: change.replacementComponents }
-        : await resolveRule(diskId, change.replacement)
-      return store.changeHides(diskId, {
-        ...change,
-        ...selected,
-        replacement: replacement.path,
-        replacementComponents: replacement.components,
-      })
-    }
-    return store.changeHides(diskId, { ...change, ...selected })
-  })
+  ipcMain.handle('changeHides', (_event, diskId: number, change: HideChange) =>
+    setupOperation(async () => {
+      if (store.getDisk(diskId).targetOS === 'windows' || change.type === 'metadata')
+        return store.changeHides(diskId, change)
+      const existing = store.hideSettings(diskId).rules?.find((rule) => rule.path === change.path)
+      const selected = change.components
+        ? { path: change.path, components: change.components }
+        : (existing ?? (await resolveRule(diskId, change.path)))
+      if (change.type === 'replace') {
+        const replacement = change.replacementComponents
+          ? { path: change.replacement, components: change.replacementComponents }
+          : await resolveRule(diskId, change.replacement)
+        return store.changeHides(diskId, {
+          ...change,
+          ...selected,
+          replacement: replacement.path,
+          replacementComponents: replacement.components,
+        })
+      }
+      return store.changeHides(diskId, { ...change, ...selected })
+    }),
+  )
   ipcMain.handle('undoHides', (_event, undo) => store.undoHides(undo))
   ipcMain.handle('totals', (_event, scanId, revision) => store.totals(scanId, revision))
   ipcMain.handle('deleteScan', (_event, scanId: number) => {
@@ -306,17 +348,36 @@ function registerIpc() {
     if (typeof text !== 'string') throw new Error('Invalid clipboard text.')
     clipboard.writeText(text)
   })
-  ipcMain.handle('setCleanupEnabled', async (_event, diskId: number, enabled: boolean) => {
-    idle()
-    if (typeof enabled !== 'boolean') throw new Error('Invalid cleanup preference.')
-    const disk = store.getDisk(diskId)
-    if (disk.targetOS === 'windows' || !disk.nativeRoot) throw new Error('Unix cleanup requires a native root.')
-    const result = object(
-      await workerOperation(connection(disk.machine), 'cleanup', { root: disk.nativeRoot, enabled }),
-    )
-    if (result.enabled !== enabled) throw new Error('Native cleanup preference did not match.')
-    store.setCleanupEnabled(diskId, enabled)
-  })
+  ipcMain.handle('reinspectRoot', (_event, diskId: number) =>
+    setupOperation(async () => {
+      const disk = store.getDisk(diskId)
+      if (disk.targetOS === 'windows' || disk.machine.kind === 'historical' || !disk.nativeRoot)
+        throw new Error('Choose a live native root to reinspect.')
+      const observed = nativeRoot(
+        await workerOperation(connection(disk.machine), 'inspect', { pathBytes: disk.nativeRoot.pathBytes }),
+      )
+      const policy = object(
+        await workerOperation(connection(disk.machine), 'cleanup', { root: observed, enabled: false }),
+      )
+      if (policy.enabled !== false) throw new Error('Native cleanup could not be disabled for the reinspected root.')
+      assertBinding(disk)
+      store.refreshNativeRoot(diskId, observed)
+      return toDisk(store.getDisk(diskId))
+    }),
+  )
+  ipcMain.handle('setCleanupEnabled', (_event, diskId: number, enabled: boolean) =>
+    setupOperation(async () => {
+      if (typeof enabled !== 'boolean') throw new Error('Invalid cleanup preference.')
+      const disk = store.getDisk(diskId)
+      if (disk.targetOS === 'windows' || !disk.nativeRoot) throw new Error('Unix cleanup requires a native root.')
+      const result = object(
+        await workerOperation(connection(disk.machine), 'cleanup', { root: disk.nativeRoot, enabled }),
+      )
+      assertBinding(disk)
+      if (result.enabled !== enabled) throw new Error('Native cleanup preference did not match.')
+      store.setCleanupEnabled(diskId, enabled)
+    }),
+  )
   ipcMain.handle('executeDelete', async (_event, diskId: number, targets: StagedDelete[]) => {
     idle()
     if (!Array.isArray(targets)) throw new Error('Invalid deletion targets.')

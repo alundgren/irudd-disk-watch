@@ -237,6 +237,7 @@ export type ScanEvent =
 
 export interface DiskWatchApi {
   addSshDisk(destination: string, path: string): Promise<Disk>
+  reinspectRoot(diskId: number): Promise<Disk>
   setCleanupEnabled(diskId: number, enabled: boolean): Promise<void>
   nodeLocation(nodeId: number): Promise<NodeLocation>
   addExcludeNode(diskId: number, nodeId: number): Promise<void>
