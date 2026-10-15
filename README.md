@@ -40,7 +40,7 @@ vp run app
 
 On Windows, `vp run app` builds and starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `vp run dev` starts it that way with hot reload.
 
-On Mac, `vp run app` builds and starts Electron normally. Native scans use the Mac account's existing filesystem permissions. Choose a folder to track locally, or use Track over SSH for a Linux worker. Forward a separate profile directory when needed, for example `vp run app -- --user-data-dir=/absolute/profile-directory`. The Windows UAC launch retains those arguments too.
+On Mac, `vp run app` builds and starts Electron normally. Native scans use the Mac account's existing filesystem permissions. Choose a detected drive in the app, enter a custom folder path, or use Track over SSH for a Linux worker. On a modern Mac, choose the recommended Data volume for applications and user files. The system root `/` is a separate read-only volume and does not include Data in its scan. Forward a separate profile directory when needed, for example `vp run app -- --user-data-dir=/absolute/profile-directory`. The Windows UAC launch retains those arguments too.
 
 Build a personal unsigned Mac ARM64 app without launching or installing it:
 

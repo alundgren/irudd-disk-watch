@@ -583,6 +583,20 @@ test('intentional native policy skips retain complete comparable coverage and pe
   store.db.close()
 })
 
+test('saved issue details retain real totals and failure messages with a bounded sample', () => {
+  const { store, disk } = nativeFixture()
+  const scan = store.beginScan(disk.id, [])
+  const insert = store.db.prepare('INSERT INTO scan_error(scan_id,path,message) VALUES(?,?,?)')
+  for (let i = 0; i < 510; i++) insert.run(scan, `/fixture/${i}`, 'Permission denied')
+  store.db.prepare("UPDATE scan SET errors=900,coverage='partial' WHERE id=?").run(scan)
+  store.endScan(scan, 'failed', 'Fixture interrupted')
+  expect(store.scanIssues(scan)).toMatchObject({ total: 900 })
+  expect(store.scanIssues(scan).issues).toHaveLength(500)
+  expect(store.listScans(disk.id)[0]?.message).toBe('Fixture interrupted')
+  expect(() => store.scanIssues(scan + 1)).toThrow(/no longer/)
+  store.db.close()
+})
+
 function nativeScan(store: Store, diskId: number, rootNode: number, file: number, time: number) {
   const id = store.beginScan(diskId, [])
   store.db.prepare("UPDATE scan SET status='complete',started_at=?,size=10,files=1 WHERE id=?").run(time, id)

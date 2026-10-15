@@ -16,7 +16,8 @@ export interface WorkerConnection {
   stateDir?: string
 }
 
-export type WorkerOperation = 'hello' | 'inspect' | 'resolve' | 'scan' | 'cleanup' | 'delete' | 'deleteStatus'
+export type WorkerOperation =
+  'hello' | 'volumes' | 'inspect' | 'resolve' | 'scan' | 'cleanup' | 'delete' | 'deleteStatus'
 
 export function sshArguments(destination: string): string[] {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,252}$/.test(destination))

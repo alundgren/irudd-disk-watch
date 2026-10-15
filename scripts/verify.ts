@@ -13,6 +13,7 @@ const shots = process.argv[2] ?? mkdtempSync(join(tmpdir(), 'dw-shots-'))
 const userData = mkdtempSync(join(tmpdir(), 'dw-userdata-'))
 const root = mkdtempSync(join(tmpdir(), 'dw-fixture-'))
 const second = mkdtempSync(join(tmpdir(), 'dw-second-'))
+const chooserRoot = mkdtempSync(join(tmpdir(), 'dw-chooser-'))
 writeFileSync(join(second, 'render.mp4'), Buffer.alloc(3 * MB))
 
 function write(path: string, bytes: number) {
@@ -49,6 +50,42 @@ try {
   )
   page.on('pageerror', (err) => console.error('pageerror', err))
   await page.setViewportSize({ width: 1280, height: 820 })
+
+  // Drive discovery reads only OS mount metadata. Only the owned custom folder is registered.
+  await app.evaluate(({ dialog }) => {
+    const state = globalThis as unknown as { chooserDialogOriginal: typeof dialog.showOpenDialog }
+    state.chooserDialogOriginal = dialog.showOpenDialog
+    dialog.showOpenDialog = (() => {
+      throw new Error('Root setup must use the in-app chooser.')
+    }) as typeof dialog.showOpenDialog
+  })
+  await page.getByRole('button', { name: '+ Track a drive or folder', exact: true }).click()
+  const chooser = page.getByRole('dialog', { name: 'Track a drive or folder', exact: true })
+  await chooser.getByRole('button', { name: 'Refresh drives', exact: true }).waitFor()
+  await chooser.getByRole('button', { name: 'Refresh drives', exact: true }).click()
+  await chooser.getByRole('button', { name: 'Refresh drives', exact: true }).and(page.locator(':enabled')).waitFor()
+  await chooser.getByRole('button', { name: 'Cancel', exact: true }).click()
+  assert.equal((await page.evaluate(() => window.diskWatch.listDisks())).length, 2, 'cancel leaves roots unchanged')
+  await page.getByRole('button', { name: '+ Track a drive or folder', exact: true }).click()
+  await chooser.getByRole('button', { name: 'Track a folder instead', exact: true }).click()
+  await chooser.locator('#volume-folder-path').fill(chooserRoot)
+  await chooser.getByRole('button', { name: 'Track folder', exact: true }).click()
+  await chooser.waitFor({ state: 'hidden' })
+  const addedChoice = await page.evaluate(
+    async (path) => (await window.diskWatch.listDisks()).find((disk) => disk.root.toLowerCase() === path.toLowerCase()),
+    chooserRoot,
+  )
+  assert.ok(addedChoice, 'the custom-folder chooser registers its owned fixture')
+  assert.equal(addedChoice.latestScan, null, 'registration starts no scan')
+  assert.equal(addedChoice.cleanupEnabled, false, 'registration enables no native cleanup')
+  await page.evaluate((id) => window.diskWatch.removeDisk(id), addedChoice.id)
+  await app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = (
+      globalThis as unknown as { chooserDialogOriginal: typeof dialog.showOpenDialog }
+    ).chooserDialogOriginal
+  })
+  // Reload the original two roots before the unchanged scan and deletion checks.
+  await page.reload()
 
   async function scan(page: Page) {
     await page.evaluate(() => {
@@ -1044,5 +1081,6 @@ try {
   await app.close()
   rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   rmSync(second, { recursive: true, force: true })
+  rmSync(chooserRoot, { recursive: true, force: true })
   rmSync(userData, { recursive: true, force: true })
 }

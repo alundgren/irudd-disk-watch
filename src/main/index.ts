@@ -7,6 +7,8 @@ import type {
   Disk,
   HideChange,
   Machine,
+  NativeRoot,
+  NativeVolume,
   PathRule,
   ScanEvent,
   ScanProgress,
@@ -20,6 +22,7 @@ import type { ScanWorkerData } from './scanWorker'
 import createScanWorker from './scanWorker?nodeWorker'
 import { openDb, Store, LEGACY_WINDOWS_MACHINE_ID, type DiskRow } from './store'
 import { prepareHistory } from './history'
+import { absoluteFolderPath, selectedVolume, verifyVolume, volumeDiscovery } from './volumes'
 
 const MIN_FILE_SIZE = 1024 * 1024
 const hostOS: TargetOS = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
@@ -48,6 +51,7 @@ let activeDelete: Promise<DeleteResult> | null = null
 let localMachine: Promise<Machine> | undefined
 let restarting = false
 let activeSetup = false
+const discoveredVolumes = new Map<string, NativeVolume[]>()
 
 function connection(machine: Machine): WorkerConnection {
   return { machine, scannerExe, stateDir }
@@ -116,6 +120,24 @@ async function ensureLocalMachine(): Promise<Machine> {
 }
 async function inspectRoot(machine: Machine, path: string) {
   return nativeRoot(await workerOperation(connection(machine), 'inspect', { path }))
+}
+async function connectSshMachine(destination: string): Promise<Machine> {
+  if (typeof destination !== 'string') throw new Error('Enter an SSH destination.')
+  const provisional: Machine = { id: randomUUID(), kind: 'ssh', os: 'linux', name: destination, destination }
+  const observed = workerInfo(await workerOperation(connection(provisional), 'hello'))
+  const existing = store
+    .listMachines()
+    .find(
+      (machine) => machine.kind === 'ssh' && machine.workerId === observed.id && machine.account === observed.account,
+    )
+  return store.upsertMachine(bindWorker(existing ? { ...existing, destination } : provisional, observed))
+}
+function addObservedRoot(machine: Machine, observed: NativeRoot): Disk {
+  const disk =
+    machine.os === 'windows' ? store.addDisk(observed.path, machine.id) : store.addNativeDisk(machine.id, observed)
+  if (machine.os === 'windows')
+    store.db.prepare('UPDATE disk SET native_root=? WHERE id=?').run(JSON.stringify(observed), disk.id)
+  return toDisk(store.getDisk(disk.id))
 }
 function assertBinding(disk: DiskRow): void {
   const current = store.getDisk(disk.id)
@@ -218,41 +240,47 @@ async function restartElevated() {
   }
   app.quit()
 }
-async function pickFolder(title: string, defaultPath?: string) {
-  return (
-    (await dialog.showOpenDialog(window!, { title, defaultPath, properties: ['openDirectory'] })).filePaths[0] ?? null
-  )
-}
 function registerIpc() {
   ipcMain.handle('listDisks', () => store.listDisks().map(toDisk))
-  ipcMain.handle('pickAndAddDisk', () =>
+  ipcMain.handle('discoverVolumes', (_event, destination?: string) =>
     setupOperation(async () => {
-      const path = await pickFolder('Choose a drive or folder to track')
-      if (!path) return null
-      const machine = await ensureLocalMachine()
-      const observed = await inspectRoot(machine, path)
-      const disk = hostOS === 'windows' ? store.addDisk(path, machine.id) : store.addNativeDisk(machine.id, observed)
-      if (hostOS === 'windows')
-        store.db.prepare('UPDATE disk SET native_root=? WHERE id=?').run(JSON.stringify(observed), disk.id)
-      return toDisk(store.getDisk(disk.id))
+      const machine = destination === undefined ? await ensureLocalMachine() : await connectSshMachine(destination)
+      // A failed refresh must not leave old rows eligible for registration.
+      discoveredVolumes.delete(machine.id)
+      let result
+      try {
+        result = volumeDiscovery(await workerOperation(connection(machine), 'volumes'), machine.os)
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('Unsupported worker operation'))
+          throw new Error('This worker cannot list drives. Install the worker matching this app, then refresh.')
+        throw error
+      }
+      discoveredVolumes.set(machine.id, result.volumes)
+      return { ...result, machine }
     }),
   )
-  ipcMain.handle('addSshDisk', (_event, destination: string, path: string) =>
+  ipcMain.handle('addVolume', (_event, machineId: string, candidate: NativeVolume) =>
     setupOperation(async () => {
-      if (typeof destination !== 'string' || typeof path !== 'string')
-        throw new Error('Enter an SSH destination and root path.')
-      const provisional: Machine = { id: randomUUID(), kind: 'ssh', os: 'linux', name: destination, destination }
-      const observed = workerInfo(await workerOperation(connection(provisional), 'hello'))
-      const existing = store
-        .listMachines()
-        .find(
-          (machine) =>
-            machine.kind === 'ssh' && machine.workerId === observed.id && machine.account === observed.account,
-        )
-      const machine = store.upsertMachine(bindWorker(existing ? { ...existing, destination } : provisional, observed))
-      return toDisk(store.addNativeDisk(machine.id, await inspectRoot(machine, path)))
+      const machine = store.getMachine(machineId)
+      const volume = selectedVolume(discoveredVolumes.get(machineId) ?? [], candidate)
+      const observed = nativeRoot(
+        await workerOperation(
+          connection(machine),
+          'inspect',
+          machine.os === 'windows' ? { path: volume.path } : { pathBytes: volume.pathBytes },
+        ),
+      )
+      verifyVolume(volume, observed)
+      return addObservedRoot(machine, observed)
     }),
   )
+  ipcMain.handle('addFolder', (_event, machineId: string, path: string) =>
+    setupOperation(async () => {
+      const machine = store.getMachine(machineId)
+      return addObservedRoot(machine, await inspectRoot(machine, absoluteFolderPath(path, machine.os)))
+    }),
+  )
+  ipcMain.handle('scanIssues', (_event, scanId: number) => store.scanIssues(scanId))
   ipcMain.handle('removeDisk', (_event, diskId: number) => {
     idle()
     return store.removeDisk(diskId)

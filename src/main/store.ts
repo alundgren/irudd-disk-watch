@@ -32,6 +32,7 @@ import type {
   ScanMethod,
   ScanStatus,
   ScanSummary,
+  ScanIssues,
   TreeRow,
 } from '../shared/types'
 
@@ -244,6 +245,7 @@ interface ScanRow {
   duration_ms: number | null
   method: ScanMethod | null
   fallback: string | null
+  message: string | null
   coverage: 'complete' | 'partial'
   root_observation: string | null
   policy: string | null
@@ -264,6 +266,7 @@ function toScan(row: ScanRow): ScanSummary {
     durationMs: row.duration_ms,
     method: row.method,
     fallback: row.fallback,
+    message: row.message,
     coverage: row.coverage,
     rootObservation: row.root_observation ? JSON.parse(row.root_observation) : null,
     ...(row.policy === null ? {} : { policy: row.policy }),
@@ -909,6 +912,16 @@ export class Store {
   listScans(diskId: number): ScanSummary[] {
     const rows = this.db.prepare(`SELECT * FROM scan WHERE disk_id = ? ORDER BY started_at DESC`).all(diskId)
     return (rows as unknown as ScanRow[]).map(toScan)
+  }
+
+  scanIssues(scanId: number): ScanIssues {
+    const row = this.db.prepare('SELECT errors FROM scan WHERE id=?').get(scanId) as { errors: number } | undefined
+    if (!row) throw new Error('This scan is no longer available.')
+    const issues = this.db.prepare('SELECT path,message FROM scan_error WHERE scan_id=? LIMIT 500').all(scanId) as {
+      path: string
+      message: string
+    }[]
+    return { total: row.errors, issues }
   }
 
   latestCompleteScan(diskId: number): ScanSummary | null {

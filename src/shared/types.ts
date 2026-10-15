@@ -32,6 +32,30 @@ export interface NativeRoot {
   observedAt: number
   readOnly: boolean
 }
+export interface NativeVolume {
+  id: string
+  name: string
+  path: string
+  os: TargetOS
+  pathBytes?: string
+  filesystem: string | null
+  kind: 'local' | 'network' | 'removable' | 'system'
+  readOnly: boolean | null
+  capacity: { total: number; free: number } | null
+  recommended: boolean
+  mount?: string
+  device?: string
+}
+export interface VolumeDiscovery {
+  observedAt: number
+  volumes: NativeVolume[]
+  truncated: boolean
+  errors: number
+}
+export interface ScanIssues {
+  total: number
+  issues: { path: string; message: string }[]
+}
 export interface PathRule {
   path: string
   components?: string[]
@@ -73,6 +97,7 @@ export interface ScanSummary {
   method: ScanMethod | null
   /** Why a scan fell back to walking folders instead of reading the MFT. */
   fallback: string | null
+  message?: string | null
   coverage?: 'complete' | 'partial'
   rootObservation?: NativeRoot | null
   policy?: string
@@ -236,7 +261,10 @@ export type ScanEvent =
   | { type: 'run-finished' }
 
 export interface DiskWatchApi {
-  addSshDisk(destination: string, path: string): Promise<Disk>
+  discoverVolumes(destination?: string): Promise<VolumeDiscovery & { machine: Machine }>
+  addVolume(machineId: string, volume: NativeVolume): Promise<Disk>
+  addFolder(machineId: string, path: string): Promise<Disk>
+  scanIssues(scanId: number): Promise<ScanIssues>
   reinspectRoot(diskId: number): Promise<Disk>
   setCleanupEnabled(diskId: number, enabled: boolean): Promise<void>
   nodeLocation(nodeId: number): Promise<NodeLocation>
@@ -245,7 +273,6 @@ export interface DiskWatchApi {
   deleteOperations(diskId: number): Promise<DeleteOperation[]>
   recoverDelete(operationId: string): Promise<DeleteResult>
   listDisks(): Promise<Disk[]>
-  pickAndAddDisk(): Promise<Disk | null>
   removeDisk(diskId: number): Promise<void>
   pickExclude(diskId: number, kind: 'file' | 'dir'): Promise<string | null>
   setExcludes(diskId: number, paths: string[]): Promise<void>
