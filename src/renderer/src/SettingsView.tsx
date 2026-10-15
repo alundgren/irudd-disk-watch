@@ -253,7 +253,10 @@ export function SettingsView({
                   {scan.coverage === 'partial' ? ' · partial coverage, unavailable for Changes' : ''}
                 </span>
               ) : (
-                <span className="muted">{scan.status}</span>
+                <span className="scan-history-result">
+                  <span className="muted">{scan.status}</span>
+                  {scan.message && <span className="scan-message">{scan.message}</span>}
+                </span>
               )}
               <button
                 className="danger-quiet"

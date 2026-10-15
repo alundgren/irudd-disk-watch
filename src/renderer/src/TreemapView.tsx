@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 import type { Disk, NodeKind, ScanSummary, StagedDelete, TreeRow, ViewTotal } from '../../shared/types'
-import { api, formatBytes, formatCount, joinDisplayPath } from './api'
+import { api, formatBytes, formatCount, joinDisplayPath, isWindows } from './api'
 import { openRowContext } from './rowContext'
 import { ScanPicker } from './ScanPicker'
+import { ScanDiagnostics } from './ScanDiagnostics'
 import { mapEntries, treemap, type MapEntry, type Rectangle } from './treemap'
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
   rows: TreeRow[]
   total: ViewTotal
   staged: StagedDelete[]
+  onChooseDrive(): void
   onPick(scanId: number): void
   onContext(
     target: { nodeId: number; kind?: Exclude<NodeKind, 'rest'>; size?: number; files?: number; canDelete?: boolean },
@@ -29,7 +31,8 @@ function position(box: Rectangle<MapEntry>): CSSProperties {
   return { left: box.x, top: box.y, width: box.width, height: box.height }
 }
 
-export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, onContext }: Props) {
+export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, onContext, onChooseDrive }: Props) {
+  const scan = scans.find((item) => item.id === scanId)!
   const [trail, setTrail] = useState<Location[]>([{ name: disk.root, nodeId: disk.rootNode, rows, depth: 0 }])
   const location = trail.at(-1)!
   const [children, setChildren] = useState<Map<number, TreeRow[]>>(new Map())
@@ -205,9 +208,10 @@ export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, 
         <span className="strong">{formatBytes(total.visible.size)} visible</span>
         <span className="muted small">
           {formatBytes(total.raw.size)} captured · {formatBytes(total.hidden.size)} hidden
-          {scans.find((scan) => scan.id === scanId)!.errors > 0 ? ' · Some folders could not be read' : ''}
+          {scans.find((scan) => scan.id === scanId)!.errors > 0 ? ' · Some items could not be read' : ''}
         </span>
       </div>
+      <ScanDiagnostics key={scan.id} scan={scan} unix={!isWindows(disk)} onChooseDrive={onChooseDrive} />
       <div className="map-navigation">
         <nav className="map-breadcrumbs" aria-label="Treemap location">
           {trail.map((part, index) => (
@@ -239,7 +243,13 @@ export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, 
         {size > 0 ? (
           boxes.map((box, i) => tile(box, i, location.depth, path))
         ) : (
-          <p className="map-empty">No visible disk usage in this folder.</p>
+          <p className="map-empty">
+            {scan.coverage === 'partial'
+              ? 'No visible data was captured here. This scan has partial coverage.'
+              : scan.files === 0 && (scan.skipped?.mounts ?? 0) > 0
+                ? 'No files were captured within this mount scope.'
+                : 'No visible disk usage in this folder.'}
+          </p>
         )}
         {loading && (
           <div className="map-loading" role="status">
