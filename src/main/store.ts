@@ -821,6 +821,8 @@ export class Store {
     const latest = this.latestCompleteScan(diskId)
     if (!latest) throw new Error('Scan this disk before staging deletion.')
     if (disk.targetOS !== 'windows') {
+      if (latest.coverage !== 'complete')
+        throw new Error('A complete-coverage native scan is required before staging cleanup.')
       const gate = this.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(diskId)!
       if (latest.id <= Number(gate.root_refresh_scan))
         throw new Error('Scan this root again after reinspection before staging deletion.')
