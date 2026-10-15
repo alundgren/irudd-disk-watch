@@ -86,6 +86,14 @@ The JSON records exact commit IDs and scanner SHA-256 hashes. Warmup rounds prec
 
 The requirement is to preserve Windows performance. Use measured baseline variation as the noise budget; a repeatable regression outside it is a failure, with no portability allowance. Record that numerical budget before assessing candidate performance. Investigate repeatable timing or memory increases with the same root and settings. A correctness mismatch blocks approval even if timing improves. Save raw measurements, the pre-agreed budget and the conclusion. Do not infer cold-cache behavior or broad performance preservation from the tiny fixture.
 
+## Check the in-app drive chooser
+
+In the dedicated Windows graphical session, start the candidate with an explicit temporary profile and open **Track a drive or folder**. Assert that the in-app dialog lists the execution machine, normal Windows drive paths, filesystem and observed capacity. Refresh the list, cancel and confirm that no tracked root or scan was added. Stub the application's native `showOpenDialog` to fail for this chooser check, then restore it before existing exclusion-picker tests. No Explorer window or native drive picker should open.
+
+Select an owned test drive or switch to **Track a folder instead**, enter a new owned fixture in `volume-folder-path`, and choose **Track folder**. Inspect the resulting tracked root and machine binding, confirm no scan started automatically, then remove only that test root through Settings before the original fixture scans. Unknown drive identities must offer explicit folder inspection rather than direct selection. Test a read-only drive row remains available for scanning, and system volumes can be revealed with **Show system volumes**.
+
+Repeat over an existing test SSH connection in the same dialog. Test delayed discovery after changing the execution source or cancelling, empty/incomplete discovery, retry, an unavailable capacity and failed root inspection. A stale response must not add a root or replace the current choice. Keep private destinations and mount details out of published screenshots. Inspect saved scan details in Space and Treemap, including a zero-byte partial scan, total error counts larger than the saved sample, scan scope skips and an unavailable diagnostics reply. The zero-byte partial view must explain that drive usage is unknown and offer **Choose a drive**. These GUI checks remain pending when no isolated desktop is available.
+
 ## Import a copied legacy history
 
 Use an operator-selected legacy test snapshot or create a consistent SQLite backup from an authorized source opened read-only. SQLite backup must include committed WAL rows; copying a live `.db` alone is insufficient. Close the backup connection before copying that snapshot into test profiles. Keep the source profile and source database untouched by either application.
