@@ -113,7 +113,7 @@ const NTFS_METADATA: [string, NodeKind][] = [
   ['$Extend', 'dir'],
 ]
 
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 export const LEGACY_WINDOWS_MACHINE_ID = 'legacy-windows'
 
 function migrateNative(db: DatabaseSync): void {
@@ -198,19 +198,23 @@ function migrateNative(db: DatabaseSync): void {
 export function openDb(file: string): DatabaseSync {
   const db = new DatabaseSync(file)
   try {
-    const { user_version: applied } = db.prepare('PRAGMA user_version').get() as { user_version: number }
-    if (applied > SCHEMA_VERSION)
-      throw new Error(`History schema ${applied} is newer than supported schema ${SCHEMA_VERSION}.`)
+    const { user_version: observed } = db.prepare('PRAGMA user_version').get() as { user_version: number }
+    if (observed > SCHEMA_VERSION)
+      throw new Error(`History schema ${observed} is newer than supported schema ${SCHEMA_VERSION}.`)
     db.function('windows_name_key', { deterministic: true }, (name) => 'w:' + String(name).toLowerCase())
     db.exec('PRAGMA foreign_keys = OFF; PRAGMA busy_timeout = 5000;')
     db.exec('BEGIN IMMEDIATE')
     try {
+      const { user_version: applied } = db.prepare('PRAGMA user_version').get() as { user_version: number }
+      if (applied > SCHEMA_VERSION)
+        throw new Error(`History schema ${applied} is newer than supported schema ${SCHEMA_VERSION}.`)
       db.exec(SCHEMA)
       for (const [index, migration] of MIGRATIONS.entries()) {
         if (index < applied) continue
         db.exec(migration)
       }
       if (applied < 4) migrateNative(db)
+      if (applied < 5) db.exec('ALTER TABLE disk ADD COLUMN root_refresh_scan INTEGER NOT NULL DEFAULT 0')
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
       if (db.prepare('PRAGMA foreign_key_check').all().length)
         throw new Error('History contains invalid ownership references.')
@@ -420,7 +424,47 @@ export class Store {
       throw new Error('Inspect the execution worker first.')
     validateRoot(root)
     if (machine.os === 'windows') throw new Error('Native roots require a Unix execution machine.')
+    const existing = this.db
+      .prepare('SELECT id FROM disk WHERE machine_id=? AND root_key=?')
+      .get(machineId, root.pathBytes) as { id: number } | undefined
+    if (existing) {
+      const disk = this.getDisk(existing.id)
+      if (!disk.nativeRoot || !sameRoot(disk.nativeRoot, root))
+        throw new Error(
+          'The root identity or filesystem changed. Reinspect this root deliberately in Settings before scanning.',
+        )
+      return disk
+    }
     return this.insertDisk(machineId, root.path, root.pathBytes, root)
+  }
+
+  refreshNativeRoot(diskId: number, root: NativeRoot): DiskRow {
+    validateRoot(root)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const disk = this.getDisk(diskId)
+      if (
+        disk.targetOS === 'windows' ||
+        !disk.nativeRoot ||
+        disk.machine.kind === 'historical' ||
+        !disk.machine.workerId ||
+        !disk.machine.account
+      )
+        throw new Error('Reinspection requires a bound native Unix execution machine.')
+      if (root.pathBytes !== disk.nativeRoot.pathBytes)
+        throw new Error('Reinspection must keep the exact tracked root path.')
+      this.db
+        .prepare(
+          `UPDATE disk SET native_root=?,cleanup_enabled=0,
+        root_refresh_scan=max(root_refresh_scan,coalesce((SELECT max(id) FROM scan WHERE disk_id=?),0)) WHERE id=?`,
+        )
+        .run(JSON.stringify(root), diskId, diskId)
+      this.db.exec('COMMIT')
+      return this.getDisk(diskId)
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   setCleanupEnabled(diskId: number, enabled: boolean): void {
@@ -776,6 +820,13 @@ export class Store {
     const path = disk.targetOS === 'windows' ? deletePath(disk.root, location.path) : location.path
     const latest = this.latestCompleteScan(diskId)
     if (!latest) throw new Error('Scan this disk before staging deletion.')
+    if (disk.targetOS !== 'windows') {
+      if (latest.coverage !== 'complete')
+        throw new Error('A complete-coverage native scan is required before staging cleanup.')
+      const gate = this.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(diskId)!
+      if (latest.id <= Number(gate.root_refresh_scan))
+        throw new Error('Scan this root again after reinspection before staging deletion.')
+    }
     const entry = this.db
       .prepare(
         `SELECT n.kind, e.size, e.files, e.native_identity FROM node n JOIN entry e ON e.node_id = n.id WHERE n.id = ? AND e.scan_id = ?`,
@@ -861,8 +912,9 @@ export class Store {
   }
 
   latestCompleteScan(diskId: number): ScanSummary | null {
+    const order = this.getDisk(diskId).targetOS === 'windows' ? 'started_at' : 'id'
     const row = this.db
-      .prepare(`SELECT * FROM scan WHERE disk_id = ? AND status = 'complete' ORDER BY started_at DESC LIMIT 1`)
+      .prepare(`SELECT * FROM scan WHERE disk_id = ? AND status = 'complete' ORDER BY ${order} DESC LIMIT 1`)
       .get(diskId)
     return row ? toScan(row as unknown as ScanRow) : null
   }
@@ -871,17 +923,14 @@ export class Store {
     const disk = this.getDisk(diskId)
     if (root) {
       validateRoot(root)
-      if (
-        !disk.nativeRoot ||
-        disk.nativeRoot.pathBytes !== root.pathBytes ||
-        !sameIdentity(disk.nativeRoot.identity, root.identity)
-      )
+      if (!disk.nativeRoot || !sameRoot(disk.nativeRoot, root))
         throw new Error('The root changed since it was configured.')
     }
     if (disk.nativeRoot && !root) root = disk.nativeRoot
     const result = this.db
       .prepare(
-        `INSERT INTO scan (disk_id, started_at, status, excludes,root_observation) VALUES (?, ?, 'running', ?,?)`,
+        `INSERT INTO scan (id,disk_id, started_at, status, excludes,root_observation)
+        VALUES (${disk.targetOS === 'windows' ? 'NULL' : `(SELECT max(coalesce((SELECT max(id) FROM scan),0),coalesce((SELECT max(root_refresh_scan) FROM disk),0))+1)`}, ?, ?, 'running', ?,?)`,
       )
       .run(diskId, Date.now(), JSON.stringify(excludes), root ? JSON.stringify(root) : null)
     return Number(result.lastInsertRowid)
@@ -1035,12 +1084,24 @@ export class Store {
   }
 
   private assertComparable(fromId: number, toId: number): void {
-    for (const id of [fromId, toId]) {
-      const row = this.db.prepare('SELECT status,coverage FROM scan WHERE id=?').get(id)
+    const rows = [fromId, toId].map((id) => {
+      const row = this.db.prepare('SELECT disk_id,coverage,root_observation FROM scan WHERE id=?').get(id)
       if (!row) throw new Error(`No scan ${id}`)
       if (row.coverage === 'partial')
         throw new Error(
           'Partial scans cannot be compared in Changes because unreadable or skipped entries could appear as removed files.',
+        )
+      return row
+    })
+    if (rows[0]!.disk_id !== rows[1]!.disk_id) throw new Error('Choose scans from the same disk.')
+    const disk = this.getDisk(Number(rows[0]!.disk_id))
+    if (disk.targetOS !== 'windows') {
+      const roots = rows.map((row) =>
+        row.root_observation ? (JSON.parse(String(row.root_observation)) as NativeRoot) : null,
+      )
+      if (!roots[0] || !roots[1] || !sameRoot(roots[0], roots[1]))
+        throw new Error(
+          'These scans observed different native root identities or filesystems and cannot be compared in Changes.',
         )
     }
   }
@@ -1048,11 +1109,7 @@ export class Store {
   setScanRoot(scanId: number, root: NativeRoot): void {
     const disk = this.scanDisk(scanId)
     validateRoot(root)
-    if (
-      !disk.nativeRoot ||
-      disk.nativeRoot.pathBytes !== root.pathBytes ||
-      !sameIdentity(disk.nativeRoot.identity, root.identity)
-    )
+    if (!disk.nativeRoot || !sameRoot(disk.nativeRoot, root))
       throw new Error('The root changed since it was configured.')
     this.db.prepare('UPDATE scan SET root_observation=? WHERE id=?').run(JSON.stringify(root), scanId)
   }
@@ -1219,4 +1276,8 @@ function validateRoot(root: NativeRoot): void {
 
 function sameIdentity(a: NativeIdentity, b: NativeIdentity): boolean {
   return a.device === b.device && a.inode === b.inode && a.mount === b.mount
+}
+
+function sameRoot(a: NativeRoot, b: NativeRoot): boolean {
+  return a.pathBytes === b.pathBytes && a.filesystem === b.filesystem && sameIdentity(a.identity, b.identity)
 }

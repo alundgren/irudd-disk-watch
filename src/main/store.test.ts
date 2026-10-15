@@ -582,3 +582,123 @@ test('intentional native policy skips retain complete comparable coverage and pe
   expect(() => store.compare(first, second)).toThrow(/Partial scans/)
   store.db.close()
 })
+
+function nativeScan(store: Store, diskId: number, rootNode: number, file: number, time: number) {
+  const id = store.beginScan(diskId, [])
+  store.db.prepare("UPDATE scan SET status='complete',started_at=?,size=10,files=1 WHERE id=?").run(time, id)
+  const parent = Number(store.db.prepare('SELECT parent FROM node WHERE id=?').get(file)!.parent)
+  for (const node of new Set([rootNode, parent, file]))
+    store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,10,1)').run(id, node)
+  store.setEntryIdentity(id, file, { device: '1', inode: '3' })
+  return id
+}
+
+test('native root reinspection preserves history rules and receipts while requiring a new scan for cleanup', () => {
+  const { store, disk, root } = nativeFixture()
+  const parent = store.internNode(disk.rootNode, 'dir', 'nested', encoded('nested'))
+  const file = store.internNode(parent, 'file', 'file', encoded('file'))
+  const before = nativeScan(store, disk.id, disk.rootNode, file, 5000)
+  store.changeHides(disk.id, {
+    type: 'add',
+    path: '/fixture/nested/hidden',
+    components: [encoded('nested'), encoded('hidden')],
+  })
+  store.addExcludeRule(disk.id, { path: '/fixture/skip', components: [encoded('skip')] })
+  store.recordDeleteOperation({
+    operationId: 'saved-receipt',
+    diskId: disk.id,
+    payload: { scan: before },
+    state: 'interrupted',
+    receipt: { state: 'interrupted' },
+  })
+  store.setCleanupEnabled(disk.id, true)
+  expect(store.stageDelete(disk.id, file).scanId).toBe(before)
+  const history = store.listScans(disk.id),
+    hides = store.hideSettings(disk.id),
+    rules = store.excludeRules(disk.id),
+    receipts = store.listDeleteOperations(disk.id)
+  const refreshed = { ...root, identity: { ...root.identity, mount: '2' }, observedAt: 2 }
+  expect(() => store.addNativeDisk(disk.machineId, refreshed)).toThrow(/Reinspect.*Settings/)
+  expect(() => store.refreshNativeRoot(disk.id, { ...refreshed, pathBytes: encoded('/other') })).toThrow(
+    /exact tracked root path/,
+  )
+  expect(store.refreshNativeRoot(disk.id, refreshed)).toMatchObject({
+    id: disk.id,
+    rootNode: disk.rootNode,
+    nativeRoot: refreshed,
+    cleanupEnabled: false,
+  })
+  expect(store.listScans(disk.id)).toEqual(history)
+  expect(store.children(before, disk.rootNode)).toMatchObject([{ name: 'nested', size: 10 }])
+  expect(store.hideSettings(disk.id)).toEqual(hides)
+  expect(store.excludeRules(disk.id)).toEqual(rules)
+  expect(store.listDeleteOperations(disk.id)).toEqual(receipts)
+  store.setCleanupEnabled(disk.id, true)
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/after reinspection/)
+  const after = nativeScan(store, disk.id, disk.rootNode, file, 1)
+  expect(after).toBeGreaterThan(before)
+  expect(store.stageDelete(disk.id, file)).toMatchObject({ scanId: after, rootIdentity: refreshed.identity })
+  expect(() => store.compare(before, after)).toThrow(/different native root identities/)
+  expect(() => store.diffChildren(before, after, disk.rootNode)).toThrow(/different native root identities/)
+  expect(() => store.changes(before, after)).toThrow(/different native root identities/)
+  expect(store.compare(before, before).rows).toEqual([])
+  expect(store.compare(after, after).rows).toEqual([])
+  store.db.close()
+})
+
+test('refreshing the same native identity still gates cleanup and fresh scan IDs survive deleted history', () => {
+  const { store, disk, root } = nativeFixture()
+  const parent = store.internNode(disk.rootNode, 'dir', 'nested', encoded('nested'))
+  const file = store.internNode(parent, 'file', 'file', encoded('file'))
+  const before = nativeScan(store, disk.id, disk.rootNode, file, 5000)
+  store.refreshNativeRoot(disk.id, root)
+  store.setCleanupEnabled(disk.id, true)
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/after reinspection/)
+  const comparable = nativeScan(store, disk.id, disk.rootNode, file, 1)
+  expect(store.compare(before, comparable).rows).toMatchObject([
+    { name: 'nested', before: { size: 10 }, after: { size: 10 } },
+  ])
+  store.refreshNativeRoot(disk.id, root)
+  store.setCleanupEnabled(disk.id, true)
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/after reinspection/)
+  store.deleteScan(before)
+  store.deleteScan(comparable)
+  store.refreshNativeRoot(disk.id, root)
+  store.setCleanupEnabled(disk.id, true)
+  const fresh = nativeScan(store, disk.id, disk.rootNode, file, 1)
+  expect(fresh).toBeGreaterThan(comparable)
+  expect(store.stageDelete(disk.id, file).scanId).toBe(fresh)
+  expect(() => store.refreshNativeRoot(store.addDisk('C:\\').id, root)).toThrow(/native Unix/)
+  store.db.close()
+})
+
+test('filesystem changes require explicit native refresh and separate Changes histories', () => {
+  const { store, disk, root } = nativeFixture()
+  const first = store.beginScan(disk.id, [])
+  store.db.prepare("UPDATE scan SET status='complete' WHERE id=?").run(first)
+  const changed = { ...root, filesystem: 'otherfs' }
+  expect(() => store.addNativeDisk(disk.machineId, changed)).toThrow(/Reinspect/)
+  expect(() => store.beginScan(disk.id, [], changed)).toThrow(/changed/)
+  store.refreshNativeRoot(disk.id, changed)
+  const second = store.beginScan(disk.id, [])
+  store.db.prepare("UPDATE scan SET status='complete' WHERE id=?").run(second)
+  expect(() => store.compare(first, second)).toThrow(/different native root identities or filesystems/)
+  store.db.close()
+})
+
+test('partial native coverage refuses cleanup staging while Windows staging remains unchanged', () => {
+  const { store, disk } = nativeFixture()
+  const parent = store.internNode(disk.rootNode, 'dir', 'nested', encoded('nested'))
+  const file = store.internNode(parent, 'file', 'file', encoded('file'))
+  const scan = nativeScan(store, disk.id, disk.rootNode, file, 1)
+  store.setCleanupEnabled(disk.id, true)
+  store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(scan)
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/complete-coverage native scan is required/)
+  store.db.prepare("UPDATE scan SET coverage='complete' WHERE id=?").run(scan)
+  expect(store.stageDelete(disk.id, file).scanId).toBe(scan)
+  store.db.close()
+  const windows = fixture()
+  windows.store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(windows.after)
+  expect(windows.store.stageDelete(windows.disk.id, windows.cache).scanId).toBe(windows.after)
+  windows.store.db.close()
+})
