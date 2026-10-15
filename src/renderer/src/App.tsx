@@ -20,7 +20,7 @@ import { HideDialog } from './HideDialog'
 import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
-import { SshDialog } from './SshDialog'
+import { VolumeChooser } from './VolumeChooser'
 import { sameTarget, containsTarget, summarizeStaged } from './deleteQueue'
 
 type Tab = 'space' | 'treemap' | 'changes' | 'settings'
@@ -64,7 +64,7 @@ interface ContextTarget {
 }
 
 export function App() {
-  const [sshDialog, setSshDialog] = useState(false)
+  const [chooser, setChooser] = useState<{ source: 'local' | 'ssh'; destination?: string } | null>(null)
   const [verifiedScans, setVerifiedScans] = useState<Record<number, number>>({})
   const [operations, setOperations] = useState<Record<number, DeleteOperation[]>>({})
   const [recovering, setRecovering] = useState<string | null>(null)
@@ -234,16 +234,8 @@ export function App() {
     menuElement.current.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - box.height - 8))}px`
   }, [menu])
 
-  const addDisk = async () => {
-    try {
-      const added = await api.pickAndAddDisk()
-      if (!added) return
-      setDisks(await api.listDisks())
-      await navigate({ diskId: added.id, tab: 'space' })
-    } catch (error) {
-      report(error)
-    }
-  }
+  const addDisk = () => setChooser({ source: 'local' })
+
   const cancelStaging = (diskId: number) => {
     for (const key of staging.current.keys()) if (key.startsWith(`${diskId}:`)) staging.current.delete(key)
   }
@@ -516,7 +508,7 @@ export function App() {
         <button className="add-disk" onClick={addDisk}>
           + Track a drive or folder
         </button>
-        <button className="add-disk" onClick={() => setSshDialog(true)}>
+        <button className="add-disk" onClick={() => setChooser({ source: 'ssh' })}>
           Track over SSH
         </button>
       </nav>
@@ -706,6 +698,12 @@ export function App() {
                 onPick={(scanId) => navigate({ diskId: page.disk.id, tab: 'space', scanId })}
                 onContext={context}
                 staged={staged}
+                onChooseDrive={() =>
+                  setChooser({
+                    source: page.disk.machine?.kind === 'ssh' ? 'ssh' : 'local',
+                    destination: page.disk.machine?.destination,
+                  })
+                }
               />
             ) : page.tab === 'treemap' ? (
               <TreemapView
@@ -718,6 +716,12 @@ export function App() {
                 onPick={(scanId) => navigate({ diskId: page.disk.id, tab: 'treemap', scanId })}
                 onContext={context}
                 staged={staged}
+                onChooseDrive={() =>
+                  setChooser({
+                    source: page.disk.machine?.kind === 'ssh' ? 'ssh' : 'local',
+                    destination: page.disk.machine?.destination,
+                  })
+                }
               />
             ) : !('comparison' in page) || !page.comparison ? (
               <p className="empty">
@@ -800,16 +804,18 @@ export function App() {
             )}
         </div>
       )}
-      {sshDialog && (
-        <SshDialog
-          onClose={() => setSshDialog(false)}
-          onSave={async (destination, path) => {
-            const added = await api.addSshDisk(destination, path)
+      {chooser && (
+        <VolumeChooser
+          initialSource={chooser.source}
+          initialDestination={chooser.destination}
+          onClose={() => setChooser(null)}
+          onTracked={async (added) => {
             setDisks(await api.listDisks())
             await navigate({ diskId: added.id, tab: 'space' })
           }}
         />
       )}
+
       {deleteFailure && <DeleteFailureDialog result={deleteFailure} onClose={() => setDeleteFailure(null)} />}
       {dialog && disk && ownsHide(dialog.owner) && (
         <HideDialog
