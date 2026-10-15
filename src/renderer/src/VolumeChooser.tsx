@@ -193,8 +193,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
             </p>
             {discovery.errors > 0 && (
               <p role="status" className="scan-warning">
-                Could not inspect {formatCount(discovery.errors)} {discovery.errors === 1 ? 'item' : 'items'}. Refresh
-                to retry, or enter a folder path.
+                Some drive details are unavailable. Refresh to retry, or enter a folder path.
               </p>
             )}
             {discovery.truncated && (
