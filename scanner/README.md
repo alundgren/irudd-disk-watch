@@ -1,0 +1,28 @@
+# Native worker
+
+Windows continues to use the existing direct `dw-scan.exe` scanner and deletion CLI. Its MFT reads, fallback, file-sharing guards, parallel deletion, process diagnostics and static CRT configuration are unchanged. Worker mode adds Windows account/root inspection and capacity, with scan and delete capabilities disabled there.
+
+macOS and Linux use `dw-scan --worker`. See [the wire protocol](../docs/worker-protocol.md). The desktop keeps history; this executable observes and changes files only on its execution host. Unix components retain canonical base64 bytes. Display labels escape backslashes and the UTF-8 bytes of Unicode control, format and line/paragraph separator characters. Invalid UTF-8 bytes use `\xNN`. The Unicode categories are pinned to version 16. The shared [label corpus](tests/unix-labels.json) is checked by the native tests.
+
+Unix scanning holds directory descriptors and skips symlinks. It records regular files and directories, counts symlinks, mount boundaries and special files as intentional skips, retains total error counts with at most 500 samples, and folds small files into directory totals. Birth time comes from native creation metadata when available, otherwise null. The complete tree remains in memory before output, as in the Windows scanner. Linux uses metadata-only file descriptors; macOS uses descriptor-relative native filesystem attributes and stat data without opening regular files. Neither reads file contents. Linux requires `/proc/self/fdinfo` mount identifiers, including bind mount detection. macOS uses native filesystem identifiers.
+
+Cleanup starts disabled. Opt-in requires an owner-controlled, writable directory without group or other write permission. Elevated Unix accounts and `/` cannot enable cleanup. Every traversed directory must satisfy the ownership and permission policy. macOS directories with extended ACLs remain scan-only. The selected root and its immediate children remain ineligible. Saved target device, inode, mount and kind are required; a replacement observation never approves a saved target.
+
+Cleanup supports cooperative writers and a quiescent tree. Stop writers before opting in or deleting. Descriptor-relative non-following traversal rechecks the root, mounts, ancestors and leaf identities before mutation, and stops subsequent work after a detected change or failure. Symlink leaves are unlinked without visiting their targets. A four-thread pool removes descendants without a count pass. Unix descriptors do not prevent another process from renaming an opened directory, and identity checking followed by unlink is not atomic. Concurrent hostile writers are outside this contract. Identifier reuse and changes after the final check remain possible.
+
+The account-wide lock is an owner-only regular file under `/tmp`, keyed by effective UID and shared across state-directory profiles. The worker refuses unexpected ownership, permissions, file type, hard links or replacement. It never removes that lock file. Private profile state stores the installation ID, cleanup policies and deletion receipts across executable upgrades. A started receipt is synced before mutation, then updated and synced after selected-target results. An interrupted request may already have deleted files. Repeated operation IDs return status and never restart work; different payloads are refused. A crash can leave a running receipt, which becomes interrupted when its process lock is free. There is no exactly-once guarantee.
+
+Receipt storage retains all IDs, including uncertain records. At 10,000 receipts new deletion operations are refused, rather than silently expiring replay protection. Receipt maintenance requires a deliberate operator decision; never discard running or uncertain records to make space. Large requests can also be refused before mutation when their worst-case receipt would exceed the 4 MiB frame limit.
+
+Keep stdin open and send pings during operations. EOF, cancellation or 20 seconds without input stops work. A watchdog gives cleanup up to two seconds to persist interruption, then exits blocked workers with a nonzero status. If it terminates before the final receipt update, status retrieval reports interrupted work without replay. Blocking filesystem calls can delay cooperative cancellation until the watchdog terminates the process.
+
+Run the headless checks with Rust and Python 3:
+
+```sh
+cargo test --manifest-path scanner/Cargo.toml --locked
+cargo build --manifest-path scanner/Cargo.toml --release --locked
+python3 scanner/tests/worker_smoke.py scanner/target/release/dw-scan
+cargo check --manifest-path scanner/Cargo.toml --target x86_64-pc-windows-msvc --locked
+```
+
+Tests create and delete only their own private temporary fixtures. They exercise byte names, timestamps, unreadable-file observation and unlink, permission coverage, opt-in/depth restrictions, symlink sentinels, hard links, moved opened ancestors, a leaf swap immediately before the final check, root/mount mismatch, account-wide lock contention, receipt recovery and blocked-output liveness. Actual invalid-byte filenames require Linux; APFS can reject their creation. Privileged mount/unmount fixtures and installed-app filesystem permission behavior need separate isolated environments. Cross-target compilation does not establish the Windows release gate, elevated MFT behavior or same-machine performance.
