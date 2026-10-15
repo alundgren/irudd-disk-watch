@@ -1,3 +1,57 @@
+export type TargetOS = 'windows' | 'macos' | 'linux'
+
+export interface Machine {
+  id: string
+  kind: 'local' | 'ssh' | 'historical'
+  os: TargetOS
+  name: string
+  destination?: string
+  workerId?: string
+  account?: string
+}
+
+export interface WorkerInfo {
+  id: string
+  account: string
+  os: TargetOS
+  version: 1
+  capabilities: { scan: boolean; delete: boolean }
+}
+
+export interface NativeIdentity {
+  device: string
+  inode: string
+  mount?: string
+}
+export interface NativeRoot {
+  path: string
+  pathBytes: string
+  identity: NativeIdentity
+  filesystem: string
+  capacity: { total: number; free: number } | null
+  observedAt: number
+  readOnly: boolean
+}
+export interface PathRule {
+  path: string
+  components?: string[]
+}
+export interface NodeLocation {
+  diskId: number
+  path: string
+  components: string[]
+}
+export type DeleteOperationState = 'pending' | 'running' | 'completed' | 'interrupted' | 'unknown'
+export interface DeleteOperation {
+  operationId: string
+  diskId: number
+  payload: unknown
+  state: DeleteOperationState
+  receipt?: unknown
+  createdAt: number
+  updatedAt: number
+}
+
 export type NodeKind = 'dir' | 'file' | 'rest'
 
 export type ScanStatus = 'running' | 'complete' | 'failed' | 'cancelled'
@@ -19,9 +73,19 @@ export interface ScanSummary {
   method: ScanMethod | null
   /** Why a scan fell back to walking folders instead of reading the MFT. */
   fallback: string | null
+  coverage?: 'complete' | 'partial'
+  rootObservation?: NativeRoot | null
+  policy?: string
+  skipped?: { symlinks: number; special: number; mounts: number }
 }
 
 export interface Disk {
+  machineId?: string
+  machine?: Machine
+  targetOS?: TargetOS
+  nativeRoot?: NativeRoot | null
+  cleanupEnabled?: boolean
+  excludeRules?: PathRule[]
   id: number
   root: string
   rootNode: number
@@ -32,6 +96,7 @@ export interface Disk {
 }
 
 export interface HideSettings {
+  rules?: PathRule[]
   paths: string[]
   metadata: boolean
   metadataEligible: boolean
@@ -39,12 +104,13 @@ export interface HideSettings {
 }
 
 export type HideChange =
-  | { type: 'add'; path: string }
-  | { type: 'remove'; path: string }
-  | { type: 'replace'; path: string; replacement: string }
+  | { type: 'add'; path: string; components?: string[] }
+  | { type: 'remove'; path: string; components?: string[] }
+  | { type: 'replace'; path: string; replacement: string; components?: string[]; replacementComponents?: string[] }
   | { type: 'metadata'; enabled: boolean }
 
 export interface HideUndo {
+  rules?: PathRule[]
   diskId: number
   expectedRevision: number
   paths: string[]
@@ -98,6 +164,7 @@ export interface DiffRow {
 }
 
 export interface Hotspot {
+  components?: string[]
   nodeId: number
   path: string
   before: number
@@ -110,6 +177,12 @@ export interface ScanChanges {
 }
 
 export interface StagedDelete {
+  diskId?: number
+  machineId?: string
+  components?: string[]
+  identity?: NativeIdentity
+  rootIdentity?: NativeIdentity
+  rootObservation?: NativeRoot
   scanId: number
   nodeId: number
   path: string
@@ -129,6 +202,8 @@ export interface LockProcess {
 }
 
 export interface DeleteFailure {
+  errorDomain?: string
+  machineId?: string
   path: string
   message: string
   failedPath?: string
@@ -141,6 +216,9 @@ export interface DeleteFailure {
 }
 
 export interface DeleteResult {
+  machineName?: string
+  operationId?: string
+  state?: DeleteOperationState
   deleted: string[]
   failed: DeleteFailure[]
 }
@@ -158,6 +236,13 @@ export type ScanEvent =
   | { type: 'run-finished' }
 
 export interface DiskWatchApi {
+  addSshDisk(destination: string, path: string): Promise<Disk>
+  setCleanupEnabled(diskId: number, enabled: boolean): Promise<void>
+  nodeLocation(nodeId: number): Promise<NodeLocation>
+  addExcludeNode(diskId: number, nodeId: number): Promise<void>
+  showNode(diskId: number, nodeId: number): Promise<void>
+  deleteOperations(diskId: number): Promise<DeleteOperation[]>
+  recoverDelete(operationId: string): Promise<DeleteResult>
   listDisks(): Promise<Disk[]>
   pickAndAddDisk(): Promise<Disk | null>
   removeDisk(diskId: number): Promise<void>

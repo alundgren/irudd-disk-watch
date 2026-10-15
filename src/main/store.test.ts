@@ -3,7 +3,33 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vite-plus/test'
 import { canDeletePath, canonicalPath, deletePath, hidePath, pathAncestors } from '../shared/paths'
-import { openDb, Store } from './store'
+import { openDb, Store, SCHEMA_VERSION } from './store'
+import { DatabaseSync } from 'node:sqlite'
+
+export function legacyDb(file: string, version: number): DatabaseSync {
+  const db = new DatabaseSync(file)
+  db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
+    CREATE TABLE node(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES node(id),name TEXT NOT NULL COLLATE NOCASE,kind TEXT NOT NULL,UNIQUE(parent,kind,name));
+    CREATE TABLE disk(id INTEGER PRIMARY KEY,root TEXT NOT NULL UNIQUE COLLATE NOCASE,root_node INTEGER NOT NULL REFERENCES node(id),created_at INTEGER NOT NULL);
+    CREATE TABLE exclude(disk_id INTEGER NOT NULL REFERENCES disk(id) ON DELETE CASCADE,path TEXT NOT NULL COLLATE NOCASE,PRIMARY KEY(disk_id,path));
+    CREATE TABLE scan(id INTEGER PRIMARY KEY,disk_id INTEGER NOT NULL REFERENCES disk(id) ON DELETE CASCADE,started_at INTEGER NOT NULL,finished_at INTEGER,status TEXT NOT NULL,size INTEGER NOT NULL DEFAULT 0,files INTEGER NOT NULL DEFAULT 0,dirs INTEGER NOT NULL DEFAULT 0,errors INTEGER NOT NULL DEFAULT 0,duration_ms INTEGER,excludes TEXT NOT NULL,message TEXT,method TEXT,fallback TEXT);
+    CREATE TABLE entry(scan_id INTEGER NOT NULL,node_id INTEGER NOT NULL,size INTEGER NOT NULL,files INTEGER NOT NULL,PRIMARY KEY(scan_id,node_id)) WITHOUT ROWID;
+    CREATE TABLE scan_error(scan_id INTEGER NOT NULL REFERENCES scan(id) ON DELETE CASCADE,path TEXT NOT NULL,message TEXT NOT NULL);
+    INSERT INTO node VALUES(7,NULL,'D:\\Legacy','dir');
+    INSERT INTO disk VALUES(9,'D:\\Legacy',7,1);
+    INSERT INTO scan(id,disk_id,started_at,status,size,files,excludes) VALUES(11,9,1,'complete',17,2,'[]');
+    INSERT INTO entry VALUES(11,7,17,2);
+  `)
+  if (version === 0) db.exec('ALTER TABLE scan DROP COLUMN method; ALTER TABLE scan DROP COLUMN fallback;')
+  if (version >= 2)
+    db.exec(`ALTER TABLE disk ADD COLUMN hide_metadata INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE disk ADD COLUMN hide_revision INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE view_hide(disk_id INTEGER NOT NULL REFERENCES disk(id) ON DELETE CASCADE,path_key TEXT NOT NULL,path TEXT NOT NULL,PRIMARY KEY(disk_id,path_key));`)
+  if (version >= 3)
+    db.exec('ALTER TABLE entry ADD COLUMN created_at INTEGER; ALTER TABLE entry ADD COLUMN last_written_at INTEGER;')
+  db.exec(`PRAGMA user_version=${version}`)
+  return db
+}
 
 function fixture() {
   const store = new Store(openDb(':memory:'))
@@ -57,20 +83,13 @@ test('version-two snapshot timestamps migrate as null and remain scan-owned afte
   const dir = mkdtempSync(join(tmpdir(), 'dw-age-migration-'))
   const file = join(dir, 'test.db')
   try {
-    const store = new Store(openDb(file))
-    const disk = store.addDisk('D:\\Legacy')
-    const folder = Number(
-      store.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'Folder','dir')").run(disk.rootNode)
-        .lastInsertRowid,
-    )
-    const scan = store.beginScan(disk.id, [])
-    store.db.prepare("UPDATE scan SET status='complete',size=17,files=2 WHERE id=?").run(scan)
-    for (const node of [disk.rootNode, folder])
-      store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,17,2)').run(scan, node)
-    store.db.exec(
-      'ALTER TABLE entry DROP COLUMN created_at; ALTER TABLE entry DROP COLUMN last_written_at; PRAGMA user_version=2;',
-    )
-    store.db.close()
+    const legacy = legacyDb(file, 2)
+    const disk = { id: 9, rootNode: 7 }
+    const folder = 8
+    const scan = 11
+    legacy.prepare("INSERT INTO node VALUES(8,7,'Folder','dir')").run()
+    legacy.prepare('INSERT INTO entry VALUES(11,8,17,2)').run()
+    legacy.close()
     const migrated = new Store(openDb(file))
     const old = migrated.children(scan, disk.rootNode)[0]!
     expect(old).toMatchObject({ size: 17, files: 2, createdAt: null, lastWrittenAt: null })
@@ -234,16 +253,10 @@ test('version-one databases migrate transactionally and rules survive reopening'
   const dir = mkdtempSync(join(tmpdir(), 'dw-migration-'))
   const file = join(dir, 'test.db')
   try {
-    const fresh = openDb(file)
-    const legacy = new Store(fresh)
-    const existing = legacy.addDisk('D:\\Legacy')
+    const fresh = legacyDb(file, 1)
+    const existing = { id: 9, rootNode: 7 }
+    const oldScan = 11
     fresh.prepare('INSERT INTO exclude VALUES(?,?)').run(existing.id, 'D:\\Legacy\\Skip')
-    const oldScan = legacy.beginScan(existing.id, ['D:\\Legacy\\Skip'])
-    fresh.prepare("UPDATE scan SET status='complete',size=17,files=2 WHERE id=?").run(oldScan)
-    fresh.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,17,2)').run(oldScan, existing.rootNode)
-    fresh.exec(
-      'ALTER TABLE entry DROP COLUMN created_at; ALTER TABLE entry DROP COLUMN last_written_at; DROP TABLE view_hide; ALTER TABLE disk DROP COLUMN hide_metadata; ALTER TABLE disk DROP COLUMN hide_revision; PRAGMA user_version=1;',
-    )
     fresh.close()
     const store = new Store(openDb(file))
     expect(store.listScans(existing.id)[0]).toMatchObject({ id: oldScan, size: 17, files: 2 })
@@ -264,7 +277,7 @@ test('version-one databases migrate transactionally and rules survive reopening'
       metadataEligible: false,
       revision: 2,
     })
-    expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+    expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })
     reopened.db.close()
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -406,4 +419,166 @@ test('atomic Exclude additions retain both rules and invalidate in-flight view r
   expect(() => f.store.children(f.after, f.disk.rootNode, revision)).toThrow(/changed/)
   expect(f.store.listScans(f.disk.id)).toEqual(captured)
   f.store.db.close()
+})
+
+const encoded = (name: string) => Buffer.from(name).toString('base64')
+function nativeFixture() {
+  const store = new Store(openDb(':memory:'))
+  store.upsertMachine({
+    id: 'test-linux',
+    kind: 'ssh',
+    os: 'linux',
+    name: 'Test machine',
+    workerId: 'test-worker',
+    account: 'test-account',
+  })
+  const root = {
+    path: '/fixture',
+    pathBytes: encoded('/fixture'),
+    identity: { device: '1', inode: '2' },
+    filesystem: 'testfs',
+    capacity: null,
+    observedAt: 1,
+    readOnly: false,
+  }
+  const disk = store.addNativeDisk('test-linux', root)
+  return { store, disk, root }
+}
+
+test('machine-scoped roots and exact Unix bytes keep case, invalid UTF-8 and literal escapes distinct', () => {
+  const { store, disk, root } = nativeFixture()
+  store.upsertMachine({
+    id: 'test-mac',
+    kind: 'local',
+    os: 'macos',
+    name: 'Other test machine',
+    workerId: 'other-worker',
+    account: 'test-account',
+  })
+  expect(store.addNativeDisk('test-mac', root).id).not.toBe(disk.id)
+  const names = [
+    ['A', encoded('A')],
+    ['a', encoded('a')],
+    ['\\xff', '/w=='],
+    ['\\\\xff', encoded('\\xff')],
+  ]
+  const ids = names.map(([name, bytes]) => store.internNode(disk.rootNode, 'dir', name!, bytes))
+  expect(new Set(ids).size).toBe(4)
+  expect(ids.map((id) => store.nodeLocation(id).components)).toEqual(names.map(([, bytes]) => [bytes]))
+  expect(store.internNode(disk.rootNode, 'dir', 'A', encoded('A'))).toBe(ids[0])
+  expect(() => store.internNode(disk.rootNode, 'dir', 'wrong', encoded('A'))).toThrow(/label/)
+  expect(() => store.setExcludes(disk.id, ['/fixture/A'])).toThrow(/worker/)
+  expect(() => store.changeHides(disk.id, { type: 'add', path: '/fixture/A' })).toThrow(/worker/)
+  store.db.close()
+})
+
+test('Unix hides and excludes use components through Undo and historical queries', () => {
+  const { store, disk } = nativeFixture()
+  const upper = store.internNode(disk.rootNode, 'dir', 'A', encoded('A'))
+  const lower = store.internNode(disk.rootNode, 'dir', 'a', encoded('a'))
+  const scan = store.beginScan(disk.id, [])
+  store.db.prepare("UPDATE scan SET status='complete',size=30,files=2 WHERE id=?").run(scan)
+  for (const [id, size] of [
+    [disk.rootNode, 30],
+    [upper, 10],
+    [lower, 20],
+  ])
+    store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,?,1)').run(scan!, id!, size!)
+  const change = store.changeHides(disk.id, { type: 'add', path: '/fixture/A', components: [encoded('A')] })
+  expect(store.children(scan, disk.rootNode).map((row) => row.name)).toEqual(['a'])
+  expect(store.totals(scan).hidden.size).toBe(10)
+  store.undoHides(change.undo)
+  expect(store.children(scan, disk.rootNode)).toHaveLength(2)
+  store.addExcludeRule(disk.id, { path: 'display only', components: [encoded('a')] })
+  expect(store.children(scan, disk.rootNode).map((row) => row.name)).toEqual(['A'])
+  expect(store.excludeRules(disk.id)).toEqual([{ path: 'display only', components: [encoded('a')] }])
+  store.db.close()
+})
+
+test('native deletion requires cleanup and identities from the selected saved scan', () => {
+  const { store, disk, root } = nativeFixture()
+  const parent = store.internNode(disk.rootNode, 'dir', 'nested', encoded('nested'))
+  const file = store.internNode(parent, 'file', 'file', encoded('file'))
+  const scan = store.beginScan(disk.id, [])
+  store.db.prepare("UPDATE scan SET status='complete' WHERE id=?").run(scan)
+  store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,10,1)').run(scan, file)
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/cleanup/)
+  store.setCleanupEnabled(disk.id, true)
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/identity/)
+  store.setEntryIdentity(scan, file, { device: '1', inode: '3' })
+  expect(store.stageDelete(disk.id, file)).toMatchObject({
+    machineId: disk.machineId,
+    components: [encoded('nested'), encoded('file')],
+    identity: { device: '1', inode: '3' },
+    rootIdentity: root.identity,
+  })
+  expect(() => store.stageDelete(disk.id, parent)).toThrow(/top-level/)
+  expect(() => store.setScanRoot(scan, { ...root, identity: { device: '1', inode: '99' } })).toThrow(/changed/)
+  store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(scan)
+  expect(() => store.compare(scan, scan)).toThrow(/Partial scans/)
+  expect(() => store.diffChildren(scan, scan, disk.rootNode)).toThrow(/Partial scans/)
+  expect(() => store.changes(scan, scan)).toThrow(/Partial scans/)
+  store.db.close()
+})
+
+test('deletion records never replay an ID with a different immutable request', () => {
+  const { store, disk } = nativeFixture()
+  const operation = {
+    operationId: 'test-operation',
+    diskId: disk.id,
+    payload: { targets: ['test'] },
+    state: 'pending' as const,
+  }
+  const first = store.recordDeleteOperation(operation)
+  store.updateDeleteOperation(operation.operationId, 'interrupted', { state: 'interrupted' })
+  expect(store.recordDeleteOperation(operation).state).toBe('interrupted')
+  expect(() => store.recordDeleteOperation({ ...operation, payload: { targets: ['different'] } })).toThrow(
+    /different request/,
+  )
+  expect(store.listDeleteOperations(disk.id)).toHaveLength(1)
+  expect(store.getDeleteOperation(first.operationId).payload).toEqual(operation.payload)
+  store.db.close()
+})
+
+test('legacy Windows inserts and internNode agree on Unicode case before and after reopening', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-unicode-keys-')),
+    file = join(dir, 'history.db')
+  try {
+    const store = new Store(openDb(file)),
+      disk = store.addDisk('C:\\')
+    const id = Number(
+      store.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'Ä','dir')").run(disk.rootNode).lastInsertRowid,
+    )
+    expect(store.internNode(disk.rootNode, 'dir', 'ä')).toBe(id)
+    expect(store.db.prepare('SELECT identity_key FROM node WHERE id=?').get(id)).toEqual({ identity_key: 'w:ä' })
+    store.db.close()
+    const reopened = new Store(openDb(file))
+    const second = Number(
+      reopened.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'É','dir')").run(disk.rootNode).lastInsertRowid,
+    )
+    expect(reopened.internNode(disk.rootNode, 'dir', 'é')).toBe(second)
+    expect(reopened.internNode(disk.rootNode, 'dir', 'ä')).toBe(id)
+    reopened.db.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('intentional native policy skips retain complete comparable coverage and persisted counters', () => {
+  const { store, disk } = nativeFixture()
+  const first = store.beginScan(disk.id, []),
+    second = store.beginScan(disk.id, [])
+  const policy = 'regular-files-single-mount-no-symlink-traversal'
+  const skipped = { symlinks: 2, special: 3, mounts: 1 }
+  for (const id of [first, second]) {
+    store.db
+      .prepare("UPDATE scan SET status='complete',coverage='complete',policy=?,skipped=? WHERE id=?")
+      .run(policy, JSON.stringify(skipped), id)
+    store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,0,0)').run(id, disk.rootNode)
+  }
+  expect(store.listScans(disk.id)[0]).toMatchObject({ coverage: 'complete', policy, skipped })
+  expect(store.compare(first, second).rows).toEqual([])
+  store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(second)
+  expect(() => store.compare(first, second)).toThrow(/Partial scans/)
+  store.db.close()
 })
