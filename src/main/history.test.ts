@@ -169,6 +169,7 @@ test('schema zero legacy imports retain IDs and initialize nullable metadata', a
   }
 })
 
+// This covers child startup and two durable imports on Windows storage.
 test('a killed initializer leaves no final file and the next process can initialize', async () => {
   const dir = directory(),
     source = legacyDb(join(dir, 'disk-watch.db'), 3)
@@ -194,7 +195,7 @@ test('a killed initializer leaves no final file and the next process can initial
     source.close()
     rmSync(dir, { recursive: true, force: true })
   }
-})
+}, 30_000)
 
 test('known native version four upgrades transactionally without replacing history or its IDs', async () => {
   const dir = directory(),
