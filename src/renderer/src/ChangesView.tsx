@@ -1,7 +1,7 @@
 import { useCallback, useState, type MouseEvent } from 'react'
 import { canDeletePath } from '../../shared/paths'
 import type { Comparison, DiffRow, Disk, Hotspot, NodeKind, ScanSummary, StagedDelete } from '../../shared/types'
-import { api, formatBytes, formatDelta } from './api'
+import { api, formatBytes, formatDelta, isWindows } from './api'
 import { LazyTree } from './LazyTree'
 import { NodeIcon } from './NodeIcon'
 import { openRowContext } from './rowContext'
@@ -16,6 +16,7 @@ interface ChangesViewProps {
   onContext(
     target: {
       nodeId: number
+      components?: string[]
       path?: string
       kind?: Exclude<NodeKind, 'rest'>
       size?: number
@@ -73,7 +74,7 @@ export function ChangesView({ disk, scans, comparison, onPick, onContext, staged
       </p>
       <div className="hotspots">
         <SummarizeHotspotList
-          root={disk.root}
+          disk={disk}
           title="Where new data landed"
           hint="Folders whose own files grew the most"
           items={comparison.grownFolders}
@@ -81,7 +82,7 @@ export function ChangesView({ disk, scans, comparison, onPick, onContext, staged
           onContext={onContext}
         />
         <SummarizeHotspotList
-          root={disk.root}
+          disk={disk}
           title="New folders"
           hint="The biggest folders that did not exist before"
           items={comparison.newFolders}
@@ -158,7 +159,7 @@ export function ChangesView({ disk, scans, comparison, onPick, onContext, staged
 }
 
 interface HotspotListProps {
-  root: string
+  disk: Disk
   title: string
   hint: string
   items: Hotspot[]
@@ -166,6 +167,7 @@ interface HotspotListProps {
   onContext(
     target: {
       nodeId: number
+      components?: string[]
       path?: string
       kind?: Exclude<NodeKind, 'rest'>
       size?: number
@@ -176,8 +178,10 @@ interface HotspotListProps {
   ): void
 }
 
-function SummarizeHotspotList({ root, title, hint, items, stagedIds, onContext }: HotspotListProps) {
-  const prefix = root.endsWith('\\') ? root : `${root}\\`
+function SummarizeHotspotList({ disk, title, hint, items, stagedIds, onContext }: HotspotListProps) {
+  const root = disk.root
+  const separator = isWindows(disk) ? '\\' : '/'
+  const prefix = root.endsWith(separator) ? root : `${root}${separator}`
   return (
     <section>
       <h3>{title}</h3>
@@ -187,8 +191,9 @@ function SummarizeHotspotList({ root, title, hint, items, stagedIds, onContext }
       ) : (
         <ol>
           {items.map((item) => {
-            const isRoot = item.path.toLowerCase() === root.toLowerCase()
-            const deletable = !isRoot && canDeletePath(root, item.path)
+            const isRoot = item.nodeId === disk.rootNode
+            const deletable =
+              !isRoot && (isWindows(disk) ? canDeletePath(root, item.path) : (item.components?.length ?? 0) >= 2)
             const isStaged = stagedIds.has(item.nodeId)
             return (
               <li
@@ -200,6 +205,7 @@ function SummarizeHotspotList({ root, title, hint, items, stagedIds, onContext }
                     {
                       nodeId: item.nodeId,
                       path: item.path,
+                      components: item.components,
                       kind: isRoot ? undefined : 'dir',
                       size: item.after,
                       files: 0,

@@ -22,8 +22,12 @@
     "format": "vp exec prettier --write src scripts electron.vite.config.ts vitest.config.ts",
     "verify": "vp run build && vp exec node scripts/verify.ts",
     "bench": "vp exec node scripts/bench.ts",
-    "app": "vp run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-admin.ps1",
-    "ready": "vp run test && vp run test:rust && vp run typecheck && vp run verify && vp run dist:win && vp run verify:packaged"
+    "app": "vp run build && vp exec node scripts/start-app.mjs",
+    "ready": "vp run test && vp run test:rust && vp run typecheck && vp run verify && vp run dist:win && vp run verify:packaged",
+    "dist:mac": "vp run build && vp exec node scripts/mac-icon.mjs && vp exec electron-builder --mac dir --arm64 --publish never",
+    "verify:windows": "vp run build && vp exec node scripts/verify.ts",
+    "verify:packaged:windows": "vp exec node scripts/verify-packaged.mjs",
+    "test:renderer": "vp test run src/renderer"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

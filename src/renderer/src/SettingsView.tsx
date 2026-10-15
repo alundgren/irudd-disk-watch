@@ -1,6 +1,6 @@
 import type { Disk, HideChange, ScanSummary } from '../../shared/types'
 import { useState } from 'react'
-import { api, formatBytes, formatCount, formatWhen } from './api'
+import { api, formatBytes, formatCount, formatWhen, isWindows, isHistorical, machineLabel } from './api'
 
 interface SettingsViewProps {
   disk: Disk
@@ -23,6 +23,7 @@ export function SettingsView({
   onEditHide,
   onError,
 }: SettingsViewProps) {
+  const [excludePath, setExcludePath] = useState('')
   const [busy, setBusy] = useState(false)
   const [metadata, setMetadata] = useState<boolean | null>(null)
   const change = async (change: HideChange) => {
@@ -48,9 +49,10 @@ export function SettingsView({
   const addExclude = async (kind: 'file' | 'dir') => {
     setBusy(true)
     try {
-      const path = await api.pickExclude(disk.id, kind)
+      const path = disk.machine?.kind === 'ssh' ? excludePath : await api.pickExclude(disk.id, kind)
       if (path) {
         await api.addExclude(disk.id, path)
+        setExcludePath('')
         onChanged()
       }
     } catch (error) {
@@ -78,6 +80,49 @@ export function SettingsView({
   return (
     <div className="view settings">
       <section>
+        <h2>{machineLabel(disk)}</h2>
+        <p className="path">{disk.root}</p>
+        {disk.nativeRoot && (
+          <p className="muted small">
+            {disk.nativeRoot.filesystem} · Root observed {formatWhen(disk.nativeRoot.observedAt)}. Capacity is a saved
+            observation and may be stale.
+          </p>
+        )}
+        {isHistorical(disk) && (
+          <p className="muted">Saved history only. This machine is unavailable for scanning or file actions.</p>
+        )}
+      </section>
+      {!isWindows(disk) && !isHistorical(disk) && (
+        <section>
+          <h2>Permanent cleanup</h2>
+          <p className="muted">
+            Enable only for a writable tree you own, with other programs paused from changing it. Native checks refuse
+            changed roots, mounts and file identities. A concurrent writer can still rename an open folder. Roots
+            needing stronger protection should stay scan-only.
+          </p>
+          <label className="metadata-toggle">
+            <input
+              type="checkbox"
+              checked={disk.cleanupEnabled === true}
+              disabled={busy || scanning}
+              onChange={async (event) => {
+                const enabled = event.target.checked
+                setBusy(true)
+                try {
+                  await api.setCleanupEnabled(disk.id, enabled)
+                  onChanged()
+                } catch (error) {
+                  onError(error)
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            />{' '}
+            Enable permanent deletion for this root
+          </label>
+        </section>
+      )}
+      <section>
         <h2>Hidden from views</h2>
         <p className="muted">These paths are hidden in every scan and comparison. Scans still capture them.</p>
         <ul className="plain-list hidden-paths">
@@ -87,27 +132,40 @@ export function SettingsView({
               <button disabled={busy} onClick={() => onEditHide(path)}>
                 Edit
               </button>
-              <button disabled={busy} onClick={() => change({ type: 'remove', path })}>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  change({
+                    type: 'remove',
+                    path,
+                    components: disk.hides.rules?.find((rule) => rule.path === path)?.components,
+                  })
+                }
+              >
                 Remove
               </button>
             </li>
           ))}
         </ul>
-        <label className="metadata-toggle">
-          <input
-            type="checkbox"
-            checked={metadata ?? disk.hides.metadata}
-            disabled={busy}
-            onChange={(event) => change({ type: 'metadata', enabled: event.target.checked })}
-          />{' '}
-          Hide NTFS metadata at the drive root
-        </label>
-        <p className="muted small">
-          {disk.hides.metadataEligible
-            ? 'Applies to known NTFS metadata files and $Extend at this drive root.'
-            : 'Takes effect only for a drive root confirmed by a completed MFT scan.'}{' '}
-          System Volume Information, Recycle Bin and WindowsApps stay visible.
-        </p>
+        {isWindows(disk) && (
+          <>
+            <label className="metadata-toggle">
+              <input
+                type="checkbox"
+                checked={metadata ?? disk.hides.metadata}
+                disabled={busy}
+                onChange={(event) => change({ type: 'metadata', enabled: event.target.checked })}
+              />{' '}
+              Hide NTFS metadata at the drive root
+            </label>
+            <p className="muted small">
+              {disk.hides.metadataEligible
+                ? 'Applies to known NTFS metadata files and $Extend at this drive root.'
+                : 'Takes effect only for a drive root confirmed by a completed MFT scan.'}{' '}
+              System Volume Information, Recycle Bin and WindowsApps stay visible.
+            </p>
+          </>
+        )}
       </section>
       <section>
         <h2>Excluded files and folders</h2>
@@ -124,10 +182,28 @@ export function SettingsView({
             ))}
           </ul>
         )}
-        <button disabled={busy} onClick={() => addExclude('dir')}>
+        {disk.machine?.kind === 'ssh' && (
+          <label className="remote-exclude">
+            Remote path
+            <input
+              className="path"
+              value={excludePath}
+              onChange={(event) => setExcludePath(event.target.value)}
+              placeholder="Absolute path on the tracked machine"
+              disabled={busy}
+            />
+          </label>
+        )}
+        <button
+          disabled={busy || isHistorical(disk) || (disk.machine?.kind === 'ssh' && !excludePath.trim())}
+          onClick={() => addExclude('dir')}
+        >
           Add excluded folder…
         </button>{' '}
-        <button disabled={busy} onClick={() => addExclude('file')}>
+        <button
+          disabled={busy || isHistorical(disk) || (disk.machine?.kind === 'ssh' && !excludePath.trim())}
+          onClick={() => addExclude('file')}
+        >
           Add excluded file…
         </button>
       </section>
@@ -142,6 +218,7 @@ export function SettingsView({
                 <span className="muted" title={scan.fallback ?? undefined}>
                   {formatBytes(scan.size)} · {formatCount(scan.files)} files ·{' '}
                   {((scan.durationMs ?? 0) / 1000).toFixed(1)} s · {scan.method === 'mft' ? 'MFT' : 'folder walk'}
+                  {scan.coverage === 'partial' ? ' · partial coverage, unavailable for Changes' : ''}
                 </span>
               ) : (
                 <span className="muted">{scan.status}</span>

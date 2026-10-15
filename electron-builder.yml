@@ -8,12 +8,12 @@ files:
   - package.json
 asar: true
 npmRebuild: false
-extraResources:
-  - from: scanner/target/release/dw-scan.exe
-    to: dw-scan.exe
-  - from: build/icon.ico
-    to: icon.ico
 win:
+  extraResources:
+    - from: scanner/target/release/dw-scan.exe
+      to: dw-scan.exe
+    - from: build/icon.ico
+      to: icon.ico
   target:
     - target: nsis
       arch: x64
@@ -33,3 +33,17 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: Disk Watch
   deleteAppDataOnUninstall: false
+
+mac:
+  target:
+    - target: dir
+      arch: arm64
+  icon: dist/icon.icns
+  identity: null
+  hardenedRuntime: false
+  notarize: false
+  extraResources:
+    - from: scanner/target/release/dw-scan
+      to: dw-scan
+    - from: build/icon.png
+      to: icon.png

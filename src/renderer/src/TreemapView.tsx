@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 import type { Disk, NodeKind, ScanSummary, StagedDelete, TreeRow, ViewTotal } from '../../shared/types'
-import { api, formatBytes, formatCount } from './api'
+import { api, formatBytes, formatCount, joinDisplayPath } from './api'
 import { openRowContext } from './rowContext'
 import { ScanPicker } from './ScanPicker'
 import { mapEntries, treemap, type MapEntry, type Rectangle } from './treemap'
@@ -45,7 +45,7 @@ export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, 
   const size = location.rows.reduce((sum, row) => sum + row.size, 0)
   const path = trail
     .filter((part, i) => i === 0 || part.depth !== trail[i - 1]!.depth)
-    .reduce((value, part, i) => (i === 0 ? part.name : `${value.replace(/\\$/, '')}\\${part.name}`), '')
+    .reduce((value, part, i) => (i === 0 ? part.name : joinDisplayPath(disk, value, part.name)), '')
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) => {
@@ -135,7 +135,7 @@ export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, 
     const { item } = box
     const row = item.row
     const interactive = !!item.grouped || row?.kind !== 'rest'
-    const fullPath = `${parentPath.replace(/\\$/, '')}\\${item.name}`
+    const fullPath = joinDisplayPath(disk, parentPath, item.name)
     const nestedRows = !parent && row?.kind === 'dir' ? children.get(row.nodeId) : undefined
     const inset = nestedRows && box.width >= 100 && box.height >= 85
     const isStaged = !!row && stagedIds.has(row.nodeId)
