@@ -1,7 +1,7 @@
 // Drives the built app end to end against a temp folder and saves screenshots.
 // Usage: vp run verify [screenshot dir]
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron, type Page } from 'playwright-core'
@@ -14,6 +14,7 @@ const userData = mkdtempSync(join(tmpdir(), 'dw-userdata-'))
 const root = mkdtempSync(join(tmpdir(), 'dw-fixture-'))
 const second = mkdtempSync(join(tmpdir(), 'dw-second-'))
 const chooserRoot = mkdtempSync(join(tmpdir(), 'dw-chooser-'))
+const expectedChooserRoot = realpathSync.native(chooserRoot)
 writeFileSync(join(second, 'render.mp4'), Buffer.alloc(3 * MB))
 
 function write(path: string, bytes: number) {
@@ -73,7 +74,7 @@ try {
   await chooser.waitFor({ state: 'hidden' })
   const addedChoice = await page.evaluate(
     async (path) => (await window.diskWatch.listDisks()).find((disk) => disk.root.toLowerCase() === path.toLowerCase()),
-    chooserRoot,
+    expectedChooserRoot,
   )
   assert.ok(addedChoice, 'the custom-folder chooser registers its owned fixture')
   assert.equal(addedChoice.latestScan, null, 'registration starts no scan')
