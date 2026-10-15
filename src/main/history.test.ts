@@ -195,3 +195,43 @@ test('a killed initializer leaves no final file and the next process can initial
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('known native version four upgrades transactionally without replacing history or its IDs', async () => {
+  const dir = directory(),
+    file = join(dir, HISTORY_BASENAME)
+  try {
+    const store = new Store(openDb(file)),
+      disk = store.addDisk('C:\\')
+    const scan = store.beginScan(disk.id, [])
+    store.db.prepare("UPDATE scan SET status='complete',size=17,files=2 WHERE id=?").run(scan)
+    store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,17,2)').run(scan, disk.rootNode)
+    store.db.exec('ALTER TABLE disk DROP COLUMN root_refresh_scan; PRAGMA user_version=4')
+    store.db.close()
+    expect(await prepareHistory(dir)).toBe(file)
+    const upgraded = new Store(openDb(file))
+    expect(upgraded.getDisk(disk.id).rootNode).toBe(disk.rootNode)
+    expect(upgraded.listScans(disk.id)[0]).toMatchObject({ id: scan, size: 17, files: 2 })
+    expect(upgraded.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(disk.id)).toEqual({
+      root_refresh_scan: 0,
+    })
+    expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+    upgraded.db.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('prepareHistory refuses future native versions without writing to them', async () => {
+  const dir = directory(),
+    file = join(dir, HISTORY_BASENAME)
+  try {
+    const db = openDb(file)
+    db.exec('PRAGMA user_version=100; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;')
+    db.close()
+    const before = readFileSync(file)
+    await expect(prepareHistory(dir)).rejects.toThrow(/unsupported schema/)
+    expect(readFileSync(file)).toEqual(before)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

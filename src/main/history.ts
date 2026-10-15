@@ -39,16 +39,26 @@ function validate(db: DatabaseSync): void {
 }
 
 function validateFinal(file: string): void {
+  let version: number
   const db = new DatabaseSync(file, { readOnly: true })
   try {
     const row = db.prepare('PRAGMA user_version').get()!
-    if (row.user_version !== SCHEMA_VERSION)
+    if (row.user_version !== 4 && row.user_version !== SCHEMA_VERSION)
       throw new Error(`Existing native history has unsupported schema ${row.user_version}.`)
+    version = Number(row.user_version)
     validate(db)
     db.prepare('SELECT machine_id,root_key,native_root FROM disk LIMIT 1').get()
     db.prepare('SELECT id FROM machine LIMIT 1').get()
   } finally {
     db.close()
+  }
+  if (version < SCHEMA_VERSION) {
+    const upgraded = openDb(file)
+    try {
+      validate(upgraded)
+    } finally {
+      upgraded.close()
+    }
   }
 }
 
