@@ -75,6 +75,8 @@ export interface ScanSummary {
   fallback: string | null
   coverage?: 'complete' | 'partial'
   rootObservation?: NativeRoot | null
+  policy?: string
+  skipped?: { symlinks: number; special: number; mounts: number }
 }
 
 export interface Disk {

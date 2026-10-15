@@ -539,3 +539,46 @@ test('deletion records never replay an ID with a different immutable request', (
   expect(store.getDeleteOperation(first.operationId).payload).toEqual(operation.payload)
   store.db.close()
 })
+
+test('legacy Windows inserts and internNode agree on Unicode case before and after reopening', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-unicode-keys-')),
+    file = join(dir, 'history.db')
+  try {
+    const store = new Store(openDb(file)),
+      disk = store.addDisk('C:\\')
+    const id = Number(
+      store.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'Ä','dir')").run(disk.rootNode).lastInsertRowid,
+    )
+    expect(store.internNode(disk.rootNode, 'dir', 'ä')).toBe(id)
+    expect(store.db.prepare('SELECT identity_key FROM node WHERE id=?').get(id)).toEqual({ identity_key: 'w:ä' })
+    store.db.close()
+    const reopened = new Store(openDb(file))
+    const second = Number(
+      reopened.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'É','dir')").run(disk.rootNode).lastInsertRowid,
+    )
+    expect(reopened.internNode(disk.rootNode, 'dir', 'é')).toBe(second)
+    expect(reopened.internNode(disk.rootNode, 'dir', 'ä')).toBe(id)
+    reopened.db.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('intentional native policy skips retain complete comparable coverage and persisted counters', () => {
+  const { store, disk } = nativeFixture()
+  const first = store.beginScan(disk.id, []),
+    second = store.beginScan(disk.id, [])
+  const policy = 'regular-files-single-mount-no-symlink-traversal'
+  const skipped = { symlinks: 2, special: 3, mounts: 1 }
+  for (const id of [first, second]) {
+    store.db
+      .prepare("UPDATE scan SET status='complete',coverage='complete',policy=?,skipped=? WHERE id=?")
+      .run(policy, JSON.stringify(skipped), id)
+    store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,0,0)').run(id, disk.rootNode)
+  }
+  expect(store.listScans(disk.id)[0]).toMatchObject({ coverage: 'complete', policy, skipped })
+  expect(store.compare(first, second).rows).toEqual([])
+  store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(second)
+  expect(() => store.compare(first, second)).toThrow(/Partial scans/)
+  store.db.close()
+})

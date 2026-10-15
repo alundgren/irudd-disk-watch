@@ -173,7 +173,7 @@ function migrateNative(db: DatabaseSync): void {
   db.exec(`DROP TABLE disk; DROP TABLE node;
     ALTER TABLE node_new RENAME TO node; ALTER TABLE disk_new RENAME TO disk;
     CREATE TRIGGER legacy_node_key AFTER INSERT ON node WHEN NEW.identity_key IS NULL BEGIN
-      UPDATE node SET identity_key = 'w:' || lower(NEW.name) WHERE id = NEW.id;
+      UPDATE node SET identity_key = windows_name_key(NEW.name) WHERE id = NEW.id;
     END;
     ALTER TABLE exclude RENAME TO exclude_old;
     CREATE TABLE exclude (disk_id INTEGER NOT NULL REFERENCES disk(id) ON DELETE CASCADE,
@@ -181,6 +181,8 @@ function migrateNative(db: DatabaseSync): void {
     ALTER TABLE view_hide ADD COLUMN components TEXT;
     ALTER TABLE scan ADD COLUMN coverage TEXT NOT NULL DEFAULT 'complete' CHECK(coverage IN ('complete','partial'));
     ALTER TABLE scan ADD COLUMN root_observation TEXT;
+    ALTER TABLE scan ADD COLUMN policy TEXT;
+    ALTER TABLE scan ADD COLUMN skipped TEXT;
     ALTER TABLE entry ADD COLUMN native_identity TEXT;
     CREATE TABLE delete_operation (
       operation_id TEXT PRIMARY KEY, disk_id INTEGER NOT NULL REFERENCES disk(id) ON DELETE CASCADE,
@@ -199,6 +201,7 @@ export function openDb(file: string): DatabaseSync {
     const { user_version: applied } = db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (applied > SCHEMA_VERSION)
       throw new Error(`History schema ${applied} is newer than supported schema ${SCHEMA_VERSION}.`)
+    db.function('windows_name_key', { deterministic: true }, (name) => 'w:' + String(name).toLowerCase())
     db.exec('PRAGMA foreign_keys = OFF; PRAGMA busy_timeout = 5000;')
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -239,6 +242,8 @@ interface ScanRow {
   fallback: string | null
   coverage: 'complete' | 'partial'
   root_observation: string | null
+  policy: string | null
+  skipped: string | null
 }
 
 function toScan(row: ScanRow): ScanSummary {
@@ -257,6 +262,8 @@ function toScan(row: ScanRow): ScanSummary {
     fallback: row.fallback,
     coverage: row.coverage,
     rootObservation: row.root_observation ? JSON.parse(row.root_observation) : null,
+    ...(row.policy === null ? {} : { policy: row.policy }),
+    ...(row.skipped === null ? {} : { skipped: JSON.parse(row.skipped) }),
   }
 }
 

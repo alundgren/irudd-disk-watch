@@ -128,7 +128,7 @@ export function unixLabel(component: string): string {
     let decoded: string | undefined
     if (length && i + length <= bytes.length) {
       try {
-        decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes.slice(i, i + length))
+        decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.slice(i, i + length))
       } catch {}
     }
     if (decoded === undefined) {
