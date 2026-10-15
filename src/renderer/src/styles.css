@@ -863,7 +863,8 @@ button.link:hover {
 .hide-dialog h2 {
   font-size: 22px;
 }
-.hide-dialog input {
+.hide-dialog input,
+.remote-exclude input {
   display: block;
   width: 100%;
   padding: 8px 12px;
@@ -1217,4 +1218,9 @@ button.map-hit:focus-visible {
   padding: 40px 12px;
   text-align: center;
   color: var(--muted);
+}
+
+.remote-exclude {
+  display: block;
+  margin-bottom: 12px;
 }

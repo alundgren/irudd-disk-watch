@@ -8,6 +8,13 @@ const invoke =
 
 const api: DiskWatchApi = {
   listDisks: invoke('listDisks'),
+  addSshDisk: invoke('addSshDisk'),
+  setCleanupEnabled: invoke('setCleanupEnabled'),
+  nodeLocation: invoke('nodeLocation'),
+  addExcludeNode: invoke('addExcludeNode'),
+  showNode: invoke('showNode'),
+  deleteOperations: invoke('deleteOperations'),
+  recoverDelete: invoke('recoverDelete'),
   pickAndAddDisk: invoke('pickAndAddDisk'),
   removeDisk: invoke('removeDisk'),
   pickExclude: invoke('pickExclude'),
