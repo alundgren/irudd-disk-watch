@@ -164,6 +164,10 @@ fn execute() -> Result<()> {
     if op == "hello" {
         return emit(&json!({"t":"result","value":worker}));
     }
+    if op == "volumes" {
+        let value = crate::volumes::discover(&control)?;
+        return emit(&json!({"t":"result","value":value}));
+    }
     #[cfg(unix)]
     let value = crate::unix::dispatch(&state, &request, &worker, &control)?;
     #[cfg(windows)]
