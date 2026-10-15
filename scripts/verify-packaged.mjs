@@ -68,9 +68,14 @@ try {
   await page.getByRole('menuitem', { name: 'Show in Explorer' }).waitFor()
   await page.keyboard.press('Escape')
   assert.equal(await row.evaluate((element) => document.activeElement === element), true)
+  await page.getByRole('tab', { name: 'Treemap', exact: true }).click()
+  await page
+    .getByLabel('Disk usage treemap', { exact: true })
+    .getByRole('button', { name: /^video\.mov,/ })
+    .waitFor()
   await page.screenshot({ path: join(fixture, 'packaged.png') })
   console.log(
-    `ok: packaged startup, icon, isolated user data, bundled scanner and worker scan; screenshot ${join(fixture, 'packaged.png')}`,
+    `ok: packaged startup, icon, isolated user data, bundled scanner, worker scan and treemap; screenshot ${join(fixture, 'packaged.png')}`,
   )
 } finally {
   await app.close()

@@ -1025,3 +1025,196 @@ button.link:hover {
 .metadata-toggle input {
   accent-color: var(--accent);
 }
+
+.treemap-view {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.map-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.map-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.map-breadcrumbs button {
+  background: transparent;
+  border-color: transparent;
+  overflow-wrap: anywhere;
+  text-align: left;
+  padding: 3px 8px;
+}
+
+.map-breadcrumbs button + button::before {
+  content: '\203a';
+  margin-right: 12px;
+  color: var(--muted);
+}
+
+.map-breadcrumbs button[aria-current] {
+  font-weight: 600;
+  background: var(--surface);
+}
+
+.map-help {
+  margin: 8px 0 12px;
+}
+
+.map-canvas {
+  position: relative;
+  flex: 1 0 320px;
+  min-height: 320px;
+}
+
+.map-tile {
+  position: absolute;
+  overflow: hidden;
+  --map-fill: #e0d2bd;
+  --map-edge: #b9a48f;
+}
+
+.map-color-1 {
+  --map-fill: #d6dfcd;
+  --map-edge: #a0b491;
+}
+.map-color-2 {
+  --map-fill: #d0dfe3;
+  --map-edge: #99b4bf;
+}
+.map-color-3 {
+  --map-fill: #e7d8c6;
+  --map-edge: #bea485;
+}
+.map-color-4 {
+  --map-fill: #d8d4df;
+  --map-edge: #afa3bc;
+}
+
+.map-hit {
+  position: absolute;
+  inset: 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  text-align: left;
+  width: auto;
+  height: auto;
+  padding: 8px;
+  border: 1px solid var(--map-edge);
+  border-radius: 8px;
+  background: var(--map-fill);
+  color: var(--text);
+  overflow: hidden;
+  min-width: 0;
+}
+
+button.map-hit:hover:not(:disabled),
+button.map-hit:focus-visible {
+  background: color-mix(in srgb, var(--map-fill) 65%, var(--field));
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.map-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  min-height: 0;
+  flex-shrink: 0;
+}
+
+.map-size {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+  font-size: clamp(15px, 1.5vw, 21px);
+}
+
+.map-folder-heading {
+  bottom: auto;
+  height: 31px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 3px 8px;
+}
+
+.map-folder-heading .map-size {
+  font-size: 13.5px;
+  font-weight: 400;
+}
+
+.map-children {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 34px;
+  bottom: 3px;
+  padding: 3px;
+  background: var(--map-fill);
+  border: 1px solid var(--map-edge);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+
+.map-children .map-hit {
+  background: color-mix(in srgb, var(--map-fill) 75%, var(--field));
+}
+
+.map-small-files > .map-hit {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 5px,
+    rgb(96 73 57 / 0.09) 5px,
+    rgb(96 73 57 / 0.09) 7px
+  );
+}
+
+.map-staged > .map-hit {
+  border: 2px dashed var(--danger);
+}
+
+.map-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 10px 3px 0;
+  min-height: 44px;
+  align-items: baseline;
+}
+
+.map-detail .path {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.map-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(242 234 222 / 0.8);
+  font-weight: 600;
+}
+
+.map-empty {
+  padding: 40px 12px;
+  text-align: center;
+  color: var(--muted);
+}

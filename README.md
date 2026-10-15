@@ -56,6 +56,8 @@ If you start the app from a terminal inside another Electron app, unset `ELECTRO
 
 ## How it works
 
+The Treemap tab draws folders and files as rectangles sized by their visible logical bytes. Click a folder to zoom in, use breadcrumbs to return, and choose any saved scan. Nested rectangles preview the largest folders. Colors distinguish folders; striped rectangles represent captured files below 1 MiB. Large sets of entries collect into an other-items tile that you can open. The map respects the same hides and exclusions as Space and offers the same right-click file actions.
+
 Right-click a file, folder or Changes hotspot to hide it from views. Edit the full path or choose a containing folder, then save. The rule applies immediately to all scans of that tracked drive or folder. Settings lists the saved rules for editing or removal, and Undo restores the previous rules unless a later edit has superseded it.
 
 Excluding a file or folder hides it immediately from Space, Changes and the top hotspot lists, and skips it on future scans. Settings can add either kind and remove exclusions. Small files below 1 MiB remain included in folder totals and changes but are not listed individually; there is no grouped small-files row. Old scans keep their captured totals, and an individual small file cannot be subtracted from a historical group.
