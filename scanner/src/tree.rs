@@ -1,5 +1,8 @@
+#[cfg(any(windows, test))]
 use serde_json::json;
+#[cfg(any(windows, test))]
 use std::io::{self, Write};
+#[cfg(windows)]
 use std::sync::atomic::AtomicU64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +33,7 @@ impl Times {
     }
 }
 
+#[cfg(any(windows, test))]
 pub struct FileEntry {
     pub name: String,
     pub size: u64,
@@ -37,6 +41,7 @@ pub struct FileEntry {
 }
 
 /// Live totals that the progress thread prints while a scan runs.
+#[cfg(windows)]
 #[derive(Default)]
 pub struct Counters {
     pub files: AtomicU64,
@@ -44,6 +49,7 @@ pub struct Counters {
     pub bytes: AtomicU64,
 }
 
+#[cfg(any(windows, test))]
 pub struct Dir {
     pub name: String,
     pub times: Times,
@@ -55,6 +61,7 @@ pub struct Dir {
     pub rest_files: u64,
 }
 
+#[cfg(any(windows, test))]
 impl Dir {
     pub fn new(name: String) -> Dir {
         Dir {
@@ -90,6 +97,7 @@ impl Dir {
 }
 
 /// Prints the tree in pre-order: every dir line comes before its children.
+#[cfg(any(windows, test))]
 pub fn emit(out: &mut impl Write, dir: &Dir, parent: Option<u64>, next_id: &mut u64) -> io::Result<()> {
     let id = *next_id;
     *next_id += 1;
