@@ -85,7 +85,9 @@ export function DeleteFailureDialog({ result, onClose }: { result: DeleteResult;
       setFeedback(`${label} copied.`)
     } catch {
       setCopyError(true)
-      setFeedback('Could not copy. Select the value and use the copy shortcut.')
+      setFeedback(
+        `Could not copy. Select the value and press ${navigator.platform.startsWith('Mac') ? 'Cmd+C' : 'Ctrl+C'}.`,
+      )
     }
   }
   const field = (label: string, value: string | null, mono = true) => (
