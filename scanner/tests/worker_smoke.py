@@ -80,6 +80,22 @@ with tempfile.TemporaryDirectory(prefix='disk-watch-protocol-test-') as fixture:
     assert code == 0
     worker = records[-1]['value']
     assert worker['capabilities'] == {'scan': True, 'delete': True}
+    before = sorted(os.listdir(root))
+    code, records = call(state, 'volumes', worker)
+    assert code == 0
+    discovered = records[-1]['value']
+    assert isinstance(discovered['observedAt'], int) and discovered['observedAt'] > 0
+    assert isinstance(discovered['truncated'], bool) and isinstance(discovered['errors'], int)
+    rows = discovered['volumes']
+    assert 0 < len(rows) <= 1024 and len({row['id'] for row in rows}) == len(rows)
+    for row in rows:
+        assert row['os'] == ('macos' if sys.platform == 'darwin' else 'linux')
+        assert row['kind'] in ('local', 'network', 'removable', 'system')
+        assert row['mount'].isdigit() and base64.b64decode(row['pathBytes']).startswith(b'/')
+        assert row['readOnly'] is None or isinstance(row['readOnly'], bool)
+        assert isinstance(row['recommended'], bool)
+        assert not base64.b64decode(row['pathBytes']).startswith(os.fsencode(root))
+    assert sorted(os.listdir(root)) == before
     code, records = call(state, 'inspect', worker, path=str(root))
     assert code == 0
     observed = records[-1]['value']
@@ -137,4 +153,4 @@ with tempfile.TemporaryDirectory(prefix='disk-watch-protocol-test-') as fixture:
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 if not stream.closed:
                     stream.close()
-    print('native protocol smoke passed: identity, scan bytes/times/totals, cleanup receipts, EOF/cancel/deadline')
+    print('native protocol smoke passed: identity, volume metadata, scan bytes/times/totals, cleanup receipts, EOF/cancel/deadline')
