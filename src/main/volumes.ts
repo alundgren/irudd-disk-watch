@@ -1,6 +1,6 @@
 import type { NativeRoot, NativeVolume, TargetOS, VolumeDiscovery } from '../shared/types'
 import { bytes, count, object, textField } from '../shared/workerProtocol.ts'
-import { canonicalPath, unixLabel } from '../shared/paths.ts'
+import { canonicalPath, pathKey, unixLabel } from '../shared/paths.ts'
 
 export function absoluteFolderPath(path: unknown, os: TargetOS): string {
   if (typeof path !== 'string' || path.includes('\0')) throw new Error('Enter an absolute folder path.')
@@ -80,4 +80,8 @@ export function verifyVolume(volume: NativeVolume, root: NativeRoot): void {
     throw new Error('This drive was unmounted or replaced. Refresh the drive list and choose again.')
   if (volume.os !== 'windows' && volume.pathBytes !== root.pathBytes)
     throw new Error('The inspected drive path changed. Refresh the drive list and choose again.')
+  if (volume.os === 'windows' && pathKey(volume.path) !== pathKey(root.path))
+    throw new Error(
+      'This drive mapping resolves to a different folder. Inspect its path using the custom folder option.',
+    )
 }

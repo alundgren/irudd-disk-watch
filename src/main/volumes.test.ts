@@ -81,3 +81,18 @@ test('cache-only network rows keep unknown metadata and require deliberate path 
   volumeDiscovery(discovery([cachedUnix]), 'linux')
   verifyVolume(cachedUnix, root)
 })
+
+test('Windows discovery rejects changed folder mappings even on the same volume', () => {
+  const windows: NativeVolume = {
+    ...volume,
+    os: 'windows',
+    path: 'C:\\Mounted\\',
+    pathBytes: undefined,
+    mount: undefined,
+  }
+  const observed: NativeRoot = { ...root, path: 'c:/mounted', identity: { device: '20', inode: '2' } }
+  verifyVolume(windows, observed)
+  expect(() => verifyVolume({ ...windows, path: 'X:\\' }, { ...observed, path: 'C:\\different-folder' })).toThrow(
+    /mapping resolves/,
+  )
+})
