@@ -1409,3 +1409,100 @@ button.map-hit:focus-visible {
   flex-direction: column;
   min-width: 0;
 }
+
+.column-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 10px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.column-filter input {
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+.name-filter input {
+  flex: 1;
+}
+.age-filter input {
+  width: 5em;
+}
+.filter-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 40px;
+  padding-bottom: 8px;
+}
+.filter-status > :first-child {
+  flex: 1;
+}
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.filtered-tree {
+  position: relative;
+  user-select: none;
+}
+.match-row.selected,
+.match-row.selected:hover {
+  background: var(--raised);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.match-parent {
+  color: var(--muted);
+  font-weight: 400;
+}
+.chevron-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  line-height: 1;
+}
+.chevron-button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+.select-band {
+  position: absolute;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: rgb(120 79 38 / 0.12);
+  pointer-events: none;
+}
+.filter-empty {
+  padding: 16px 24px;
+}
+.bulk-subtitle {
+  margin-top: 16px;
+  font-size: 15px;
+}
+.bulk-list {
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+.bulk-skipped li {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.age-filter {
+  flex-wrap: wrap;
+}
+.filter-problem {
+  flex-basis: 100%;
+  color: var(--danger);
+}

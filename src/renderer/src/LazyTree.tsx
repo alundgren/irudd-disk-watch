@@ -25,6 +25,11 @@ export function LazyTree<Row extends { kind: NodeKind }>(props: LazyTreeProps<Ro
   )
 }
 
+/** Children of one node inside another tree, such as an expanded Space filter match. */
+export function LazyChildren<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { depth: number }) {
+  return <Branch key={props.reloadKey} {...props} nodeId={props.rootId} />
+}
+
 function Branch<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { nodeId: number; depth: number }) {
   const { load, nodeId } = props
   const prepared = props.depth === 0 ? props.rootRows : undefined

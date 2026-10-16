@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import type {
   Comparison,
   DeleteResult,
@@ -8,6 +8,7 @@ import type {
   HideChange,
   HideSettings,
   NodeKind,
+  SearchRow,
   ScanProgress,
   StagedDelete,
   TreeRow,
@@ -21,7 +22,8 @@ import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
 import { VolumeChooser } from './VolumeChooser'
-import { sameTarget, containsTarget, summarizeStaged, verifiedScanTime } from './deleteQueue'
+import { sameTarget, containsTarget, summarizeStaged, verifiedScanTime, QueueIndex } from './deleteQueue'
+import { errorText, LIMIT_REASON, QUEUE_LIMIT, type BulkOutcome, type SkippedItem } from './bulkQueue'
 
 type Tab = 'space' | 'treemap' | 'changes' | 'settings'
 interface Intent {
@@ -76,6 +78,10 @@ export function App() {
   const [deleteFailure, setDeleteFailure] = useState<DeleteResult | null>(null)
   const [elevated, setElevated] = useState(true)
   const [stagedByDisk, setStagedByDisk] = useState<Record<number, StagedDelete[]>>({})
+  const stagedRef = useRef(stagedByDisk)
+  stagedRef.current = stagedByDisk
+  const disksRef = useRef(disks)
+  disksRef.current = disks
   const [deletingDisk, setDeletingDisk] = useState<number | null>(null)
   const deleting = deletingDisk !== null
   const deletingRef = useRef(false)
@@ -104,7 +110,8 @@ export function App() {
   const report = (error: unknown) => setNotice({ text: error instanceof Error ? error.message : String(error) })
 
   const navigate = useCallback(async (next: Intent) => {
-    staging.current.clear()
+    // A bulk queue survives reloads of its own view; leaving Space aborts it from the dialog.
+    for (const key of [...staging.current.keys()]) if (!key.endsWith(':bulk')) staging.current.delete(key)
     const identity = ++request.current
     ++hideAction.current
     intent.current = next
@@ -277,6 +284,98 @@ export function App() {
       if (staging.current.get(key) === action) staging.current.delete(key)
     }
   }
+  const queueBlocked = (diskId: number): string | null => {
+    const owner = disks.find((disk) => disk.id === diskId)
+    if (!owner) return 'This root is no longer tracked.'
+    if (isHistorical(owner)) return 'Saved history cannot delete files.'
+    if (!canCleanup(owner)) return 'Deletion is off for this root. Turn it on in Settings.'
+    if (!isWindows(owner) && needsRecovery(diskId))
+      return 'An earlier deletion needs a status check and a fresh scan first.'
+    if (deleting || deletingRef.current) return 'A deletion is running.'
+    return null
+  }
+  /**
+   * Adds staged targets without removing anything already queued, a few requests at a time.
+   * Clear, Execute delete, leaving the root and a newer scan stop the remaining requests.
+   */
+  const queueMany = async (
+    diskId: number,
+    rows: SearchRow[],
+    signal: AbortSignal,
+    onProgress: (done: number) => void,
+  ): Promise<BulkOutcome> => {
+    const blocked = queueBlocked(diskId)
+    if (blocked)
+      return { queued: 0, skipped: rows.map((row) => ({ nodeId: row.nodeId, path: row.path, reason: blocked })) }
+    const key = `${diskId}:bulk`
+    const action = Symbol()
+    staging.current.set(key, action)
+    const scanId = disksRef.current.find((disk) => disk.id === diskId)?.latestScan?.id
+    const userStop = 'Stopped before every item was queued.'
+    let stopped: string | undefined
+    const live = () => {
+      stopped ??= signal.aborted
+        ? userStop
+        : deletingRef.current
+          ? 'Stopped because a deletion started.'
+          : staging.current.get(key) !== action
+            ? 'Stopped because the queue was cleared or the view changed.'
+            : disksRef.current.find((disk) => disk.id === diskId)?.latestScan?.id !== scanId
+              ? 'Stopped because a newer scan finished. Filter again to queue from it.'
+              : undefined
+      return !stopped
+    }
+    const index = new QueueIndex(stagedRef.current[diskId] ?? [])
+    const skipped: SkippedItem[] = []
+    let added: StagedDelete[] = []
+    let committed = 0
+    const flush = () => {
+      const batch = added
+      added = []
+      committed += batch.length
+      if (batch.length)
+        setStagedByDisk((current) => {
+          const items = current[diskId] ?? []
+          const known = new QueueIndex(items)
+          const fresh = batch.filter((target) => !known.holder(target))
+          return fresh.length ? { ...current, [diskId]: [...items, ...fresh] } : current
+        })
+    }
+    const pending = [...rows]
+    let done = 0
+    const next = async () => {
+      for (let row = pending.shift(); row; row = pending.shift()) {
+        const skip = (reason: string) => skipped.push({ nodeId: row!.nodeId, path: row!.path, reason })
+        if (!live()) {
+          skip('Not queued.')
+          continue
+        }
+        try {
+          const target = await api.stageDelete(diskId, row.nodeId)
+          const holder = index.holder(target)
+          if (!live()) skip('Not queued.')
+          else if (holder)
+            skip(sameTarget(holder, target) ? 'Already queued.' : `Already queued inside ${holder.path}.`)
+          else if (!index.add(target, QUEUE_LIMIT)) skip(LIMIT_REASON)
+          else {
+            added.push(target)
+            if (added.length >= 50) flush()
+          }
+        } catch (error) {
+          skip(errorText(error))
+        }
+        onProgress(++done)
+      }
+    }
+    try {
+      await Promise.all([next(), next(), next(), next()])
+    } finally {
+      // Stop keeps what was staged; a cleared queue, a deletion or a newer scan discards the rest.
+      if (!stopped || stopped === userStop) flush()
+      if (staging.current.get(key) === action) staging.current.delete(key)
+    }
+    return { queued: committed, skipped, ...(stopped ? { stopped } : {}) }
+  }
   const removeStaged = (diskId: number, target: StagedDelete) => {
     cancelStaging(diskId)
     setStagedByDisk((current) => ({
@@ -446,10 +545,10 @@ export function App() {
     }
   }
   const disk = page?.disk
-  const staged = disk ? (stagedByDisk[disk.id] ?? []) : []
+  const staged = useMemo(() => (disk ? (stagedByDisk[disk.id] ?? []) : []), [disk, stagedByDisk])
   const unresolved = disk && !isWindows(disk) ? (operations[disk.id] ?? []) : []
   const deletionBlocked = !disk || !canCleanup(disk) || (disk && !isWindows(disk) && needsRecovery(disk.id))
-  const stagedSummary = summarizeStaged(staged)
+  const stagedSummary = useMemo(() => summarizeStaged(staged), [staged])
   const staleQueue = staged.some((item) => item.scanId !== disk?.latestScan?.id)
   const complete = page?.scans.filter((scan) => scan.status === 'complete') ?? []
   return (
@@ -686,6 +785,9 @@ export function App() {
               <p className="empty">No scans yet. Use Scan all drives to see what takes up the space.</p>
             ) : page.tab === 'space' ? (
               <SpaceView
+                key={page.disk.id}
+                queueBlocked={queueBlocked(page.disk.id)}
+                onQueueMany={(rows, signal, onProgress) => queueMany(page.disk.id, rows, signal, onProgress)}
                 disk={page.disk}
                 scans={complete}
                 scanId={page.scanId!}
