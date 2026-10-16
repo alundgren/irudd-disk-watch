@@ -846,8 +846,7 @@ export class Store {
     if (!entry || entry.kind === 'rest')
       throw new Error('This item is not in the latest scan. Scan again before staging it.')
     if (disk.targetOS !== 'windows') {
-      // A partial scan is enough only when everything at or under the target was read,
-      // so the worker deletes exactly what the scan saw there.
+      // A partial scan is enough only when nothing at or under the target failed to read.
       const partial = latest.coverage !== 'complete'
       if (partial && entry.subtree_errors === null)
         throw new Error(

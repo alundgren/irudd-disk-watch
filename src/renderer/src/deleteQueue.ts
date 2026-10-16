@@ -29,5 +29,9 @@ export function summarizeStaged(items: StagedDelete[]) {
  * items, and the native worker checks every target identity again before deleting.
  */
 export function verifiedScanTime(scans: ScanSummary[]) {
-  return Math.max(0, ...scans.filter((scan) => scan.status === 'complete').map((scan) => scan.startedAt))
+  // Same choice as the main process: the finished Unix scan with the highest ID.
+  const latest = scans
+    .filter((scan) => scan.status === 'complete')
+    .reduce<ScanSummary | null>((best, scan) => (!best || scan.id > best.id ? scan : best), null)
+  return latest?.startedAt ?? 0
 }

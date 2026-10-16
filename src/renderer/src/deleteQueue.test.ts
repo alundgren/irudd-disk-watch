@@ -59,6 +59,8 @@ describe('partial scans and deletion follow-up', () => {
     ]
     expect(verifiedScanTime(scans)).toBe(200)
     expect(verifiedScanTime([])).toBe(0)
+    // A newer scan ID wins even if its recorded start time is earlier.
+    expect(verifiedScanTime([scan(5, 150, 'complete', 'partial'), scan(4, 400, 'complete', 'complete')])).toBe(150)
   })
 
   it('marks the summary when any top-level item came from a partial scan', () => {
