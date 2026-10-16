@@ -80,8 +80,8 @@ export type NodeKind = 'dir' | 'file' | 'rest'
 
 export type ScanStatus = 'running' | 'complete' | 'failed' | 'cancelled'
 
-/** `mft` reads the NTFS master file table; `walk` lists folders one by one. */
-export type ScanMethod = 'mft' | 'walk'
+/** `incremental` reuses unchanged Mac folders; `mft` reads NTFS metadata; `walk` reads every folder. */
+export type ScanMethod = 'mft' | 'walk' | 'incremental'
 
 export interface ScanSummary {
   id: number
@@ -95,7 +95,7 @@ export interface ScanSummary {
   errors: number
   durationMs: number | null
   method: ScanMethod | null
-  /** Why a scan fell back to walking folders instead of reading the MFT. */
+  /** Why an optimization used a full scan, or could not save its baseline. */
   fallback: string | null
   message?: string | null
   coverage?: 'complete' | 'partial'
@@ -282,9 +282,10 @@ export interface DiskWatchApi {
   undoHides(undo: HideUndo): Promise<HideSettings>
   totals(scanId: number, revision: number): Promise<ViewTotal>
   deleteScan(scanId: number): Promise<void>
-  startScan(): Promise<void>
+  startScan(mode?: 'full' | 'incremental'): Promise<void>
   cancelScan(): Promise<void>
   currentScan(): Promise<ScanProgress | null>
+  openFullDiskAccessSettings(): Promise<void>
   onScanEvent(listener: (event: ScanEvent) => void): () => void
   children(scanId: number, nodeId: number, revision?: number): Promise<TreeRow[]>
   diffChildren(fromScan: number, toScan: number, nodeId: number, revision?: number): Promise<DiffRow[]>

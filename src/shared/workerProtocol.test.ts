@@ -29,6 +29,18 @@ test('decoder rejects unsupported records, numeric loss, missing timestamps and 
   )
 })
 
+test('incremental completion is accepted only on the native protocol', () => {
+  const quick = {
+    ...done,
+    method: 'incremental',
+    coverage: 'complete',
+    policy: 'regular-files-single-mount-no-symlink-traversal',
+    skipped: { symlinks: 0, special: 0, mounts: 0 },
+  }
+  expect(decodeFrame(JSON.stringify(quick), true)).toMatchObject({ method: 'incremental' })
+  expect(() => decodeFrame(JSON.stringify(quick))).toThrow('Invalid scan method')
+})
+
 test('scan completion requires unique ordered records and exact aggregate totals', () => {
   const sequence = new ScanSequence(false)
   for (const row of [root, leaf, done]) sequence.accept(row)

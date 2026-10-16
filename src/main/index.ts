@@ -167,7 +167,8 @@ async function resolveRule(diskId: number, path?: string, components?: string[])
   if (!['file', 'dir'].includes(String(value.kind))) throw new Error('Unsupported native file kind.')
   return { path: value.path, components: parts }
 }
-async function startScan() {
+async function startScan(mode: 'full' | 'incremental' = 'full') {
+  if (mode !== 'full' && mode !== 'incremental') throw new Error('Choose a full or quick scan.')
   idle()
   if (hostOS === 'windows' && store.listDisks().some((disk) => disk.machineId === LEGACY_WINDOWS_MACHINE_ID))
     await ensureLocalMachine()
@@ -183,6 +184,7 @@ async function startScan() {
     stateDir,
     diskIds,
     minFileSize: MIN_FILE_SIZE,
+    incremental: mode === 'incremental',
     ...(process.env.DISK_WATCH_VERIFY === '1' ? { method: 'walk' } : {}),
   }
   const scan: ActiveScan = {
@@ -363,9 +365,13 @@ function registerIpc() {
     idle()
     return store.deleteScan(scanId)
   })
-  ipcMain.handle('startScan', () => startScan())
+  ipcMain.handle('startScan', (_event, mode) => startScan(mode))
   ipcMain.handle('cancelScan', () => activeScan?.worker.postMessage('cancel'))
   ipcMain.handle('currentScan', () => activeScan?.progress ?? null)
+  ipcMain.handle('openFullDiskAccessSettings', async () => {
+    if (process.platform !== 'darwin') throw new Error('Full Disk Access settings are available only on this Mac.')
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles')
+  })
   ipcMain.handle('children', (_event, scanId, nodeId, revision) => store.children(scanId, nodeId, revision))
   ipcMain.handle('diffChildren', (_event, from, to, nodeId, revision) => store.diffChildren(from, to, nodeId, revision))
   ipcMain.handle('compare', (_event, from, to, revision) => store.compare(from, to, revision))

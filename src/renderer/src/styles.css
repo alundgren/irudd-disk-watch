@@ -740,6 +740,13 @@ main {
   margin: 0 0 12px;
 }
 
+.disk-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .plain-list {
   list-style: none;
   padding: 0;

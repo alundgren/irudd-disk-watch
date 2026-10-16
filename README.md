@@ -42,6 +42,8 @@ On Windows, `vp run app` builds and starts the app as administrator after a UAC 
 
 On Mac, `vp run app` builds and starts Electron normally. Native scans use the Mac account's existing filesystem permissions. Choose a detected drive in the app, enter a custom folder path, or use Track over SSH for a Linux worker. On a modern Mac, choose the recommended Data volume for applications and user files. The system root `/` is a separate read-only volume and does not include Data in its scan. Forward a separate profile directory when needed, for example `vp run app -- --user-data-dir=/absolute/profile-directory`. The Windows UAC launch retains those arguments too.
 
+For local APFS roots, **Quick scan (experimental)** reuses unchanged folders using macOS change notifications. Its first run builds a full baseline. Repeat scans can be faster on large roots with few changes; small roots can take longer because collecting events and maintaining the cache adds work. **Scan all drives** always performs the normal scan. Quick scans automatically refresh the full baseline after ten incremental runs or 24 hours, and fall back when the cache, root, scan rules, or event history cannot be trusted. Other operating systems and SSH roots keep their normal scanning method. Notifications are asynchronous, so use a full scan when you need fresh observations throughout the tree. Saved history remains independent of the disposable native cache.
+
 Build a personal unsigned Mac ARM64 app without launching or installing it:
 
 ```sh
@@ -49,6 +51,24 @@ vp run dist:mac
 ```
 
 The result is `dist/mac-arm64/Disk Watch.app`. The native `dw-scan` executable is bundled outside the ASAR archive in `Contents/Resources`, and the icon is generated from the existing artwork with the macOS `sips` and `iconutil` tools. This build is not signed or notarized. It does not replace an installed app. The Native workflow builds the app on an ARM64 Mac runner and uploads an archive that retains executable permissions.
+
+Build and reinstall the Mac app at a stable path for Spotlight and Full Disk Access:
+
+```sh
+vp run install:mac
+```
+
+This installs `/Applications/Disk Watch.app`, registers it with Launch Services, and requests Spotlight indexing. It does not launch the app, quit a running app, or modify scan history. Quit the installed copy before reinstalling. The installer stages and checks the new app before replacing the old copy, and restores the old copy if the replacement fails. Grant Full Disk Access to the installed app in System Settings.
+
+To use an existing local code-signing certificate, supply its exact name or fingerprint on the first install:
+
+```sh
+DISK_WATCH_SIGNING_IDENTITY='YOUR_CERTIFICATE_NAME_OR_FINGERPRINT' vp run install:mac
+```
+
+The installer signs the app and bundled scanner, verifies their signatures, and records only the certificate fingerprint in the installed bundle. The private key stays in Keychain. Later `vp run install:mac` commands reuse that certificate. A missing certificate or failed signature leaves the current app installed; the installer never silently falls back to unsigned code. You may need to approve Keychain access for signing. Local signing does not notarize the app or provide Developer ID distribution. Full Disk Access must be granted by the user, and retention across changed builds requires manual verification. Without a selected or previously recorded certificate, the initial install remains unsigned and may require renewed permissions after updates.
+
+To reinstall an existing build, use `vp run install:mac --skip-build`. To choose another Applications folder, use `vp run install:mac --install-directory "$HOME/Applications"`. The destination directory must be writable by your account; do not run the build with sudo. `--source "/absolute/path/Disk Watch.app"` installs a chosen existing build without rebuilding it. Installer checks run without opening an app using `node --test scripts/install-mac.check.mjs`.
 
 For SSH tracking, install a matching native Linux worker at the fixed per-account path `$HOME/.local/share/disk-watch/worker-v1`. Build it on the Linux machine, or use the matching Linux workflow artifact. Existing SSH key authentication and a previously verified host key are required; the app refuses password and host-key prompts. A generic installation on that Linux account is:
 

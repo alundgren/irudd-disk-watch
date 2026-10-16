@@ -34,6 +34,12 @@ jobs:
       - run: vp install --frozen-lockfile
       - run: vp run test:rust
       - run: vp run test
+      - name: Mac installer recovery checks
+        if: runner.os == 'macOS'
+        run: node --test scripts/install-mac.check.mjs
+      - name: Mac incremental scan comparisons
+        if: runner.os == 'macOS'
+        run: python3 scanner/tests/macos_incremental.py scanner/target/release/dw-scan
       - name: Native protocol and cancellation fixtures
         run: python3 scanner/tests/worker_smoke.py scanner/target/release/dw-scan
       - run: vp run typecheck

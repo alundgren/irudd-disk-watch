@@ -35,7 +35,8 @@ export interface ScanOptions {
   stateDir?: string
   diskId: number
   minFileSize: number
-  method?: ScanMethod
+  method?: Exclude<ScanMethod, 'incremental'>
+  incremental?: boolean
   onProgress(progress: DiskProgress): void
   signal: AbortSignal
 }
@@ -275,6 +276,9 @@ async function runNativeScan(options: ScanOptions): Promise<ScanOutcome> {
         root: disk.nativeRoot,
         excludes: rules.map((rule) => rule.components),
         minFileSize: options.minFileSize,
+        ...(options.incremental && disk.machine.kind === 'local' && disk.machine.os === 'macos'
+          ? { incremental: true }
+          : {}),
       },
       signal,
     )) {

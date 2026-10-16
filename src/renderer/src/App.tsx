@@ -887,6 +887,18 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
       >
         Scan all drives
       </button>
+      {disks.some(
+        (disk) =>
+          disk.machine?.kind === 'local' && disk.machine.os === 'macos' && disk.nativeRoot?.filesystem === 'apfs',
+      ) && (
+        <button
+          disabled={deleting}
+          title="Reuses unchanged Mac folders. The first quick scan builds a baseline; other drives receive a full scan. Use Scan all drives to read every folder again."
+          onClick={() => api.startScan('incremental').catch((err: Error) => onError(err.message))}
+        >
+          Quick scan (experimental)
+        </button>
+      )}
       {!elevated &&
         navigator.platform.startsWith('Win') &&
         disks.some((disk) => isWindows(disk) && disk.machine?.kind !== 'ssh' && !isHistorical(disk)) && (

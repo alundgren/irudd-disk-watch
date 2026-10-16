@@ -11,7 +11,8 @@ export interface ScanWorkerData {
   stateDir?: string
   diskIds: number[]
   minFileSize: number
-  method?: ScanMethod
+  method?: Exclude<ScanMethod, 'incremental'>
+  incremental?: boolean
 }
 
 const data = workerData as ScanWorkerData
@@ -34,6 +35,7 @@ for (const [index, diskId] of data.diskIds.entries()) {
     diskId,
     minFileSize: data.minFileSize,
     method: data.method,
+    incremental: data.incremental,
     signal: controller.signal,
     onProgress: (progress) => post({ type: 'progress', progress: { diskId, index, count, ...progress } }),
   })

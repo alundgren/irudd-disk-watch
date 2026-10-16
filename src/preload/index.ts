@@ -31,6 +31,7 @@ const api: DiskWatchApi = {
   startScan: invoke('startScan'),
   cancelScan: invoke('cancelScan'),
   currentScan: invoke('currentScan'),
+  openFullDiskAccessSettings: invoke('openFullDiskAccessSettings'),
   children: invoke('children'),
   diffChildren: invoke('diffChildren'),
   compare: invoke('compare'),

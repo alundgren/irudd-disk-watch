@@ -10,6 +10,7 @@ pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
+#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Default)]
 pub struct Times {
     pub created_at: Option<u64>,

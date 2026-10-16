@@ -39,7 +39,7 @@ export type ScanLine =
       dirs: number
       errors: number
       ms: number
-      method: 'walk' | 'mft'
+      method: 'walk' | 'mft' | 'incremental'
       fallback: string | null
       coverage?: 'complete' | 'partial'
       policy?: string
@@ -174,7 +174,10 @@ export function decodeFrame(line: string, native = false): WorkerFrame {
       break
     case 'done':
       for (const field of ['size', 'files', 'dirs', 'errors', 'ms']) count(row[field], field)
-      if (!['walk', 'mft'].includes(String(row.method)) || !(row.fallback === null || typeof row.fallback === 'string'))
+      if (
+        !['walk', 'mft', ...(native ? ['incremental'] : [])].includes(String(row.method)) ||
+        !(row.fallback === null || typeof row.fallback === 'string')
+      )
         throw new Error('Invalid scan method.')
       if (native && !['complete', 'partial'].includes(String(row.coverage))) throw new Error('Missing scan coverage.')
       if (native) {

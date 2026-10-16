@@ -13,6 +13,13 @@ use std::os::unix::{
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
+mod macos_bulk;
+#[cfg(target_os = "macos")]
+mod macos_events;
+#[cfg(target_os = "macos")]
+mod macos_incremental;
+
 #[derive(Debug)]
 pub(crate) struct NativeError {
     message: String,
@@ -468,6 +475,29 @@ pub fn worker_identity(state: &Path) -> Result<Value> {
     )
 }
 
+#[cfg(target_os = "macos")]
+fn mac_stat_observation(
+    current: &libc::stat,
+    mount: &str,
+    started: u64,
+) -> Result<(Value, crate::tree::Times, u64)> {
+    let millis = |seconds: i64, nanos: i64| -> Option<u64> {
+        let seconds = u64::try_from(seconds).ok()?;
+        let nanos = u64::try_from(nanos).ok()?;
+        seconds
+            .checked_mul(1000)?
+            .checked_add(nanos / 1_000_000)
+            .filter(|v| *v <= worker::MAX_SAFE)
+    };
+    let times = crate::tree::Times::capture(
+        millis(current.st_birthtime, current.st_birthtime_nsec),
+        millis(current.st_mtime, current.st_mtime_nsec),
+        started,
+    );
+    let size = safe(u64::try_from(current.st_size).map_err(|_| "Invalid native file length")?)?;
+    Ok((leaf_identity(current, mount), times, size))
+}
+
 fn regular_observation(
     parent: &File,
     name: &[u8],
@@ -521,24 +551,50 @@ fn regular_observation(
         {
             return Err("File changed during observation".into());
         }
-        let millis = |seconds: i64, nanos: i64| -> Option<u64> {
-            let seconds = u64::try_from(seconds).ok()?;
-            let nanos = u64::try_from(nanos).ok()?;
-            seconds
-                .checked_mul(1000)?
-                .checked_add(nanos / 1_000_000)
-                .filter(|v| *v <= worker::MAX_SAFE)
-        };
-        let times = crate::tree::Times::capture(
-            millis(current.st_birthtime, current.st_birthtime_nsec),
-            millis(current.st_mtime, current.st_mtime_nsec),
-            started,
-        );
-        let size = safe(u64::try_from(current.st_size).map_err(|_| "Invalid native file length")?)?;
-        Ok((leaf_identity(&current, &mount), times, size))
+        mac_stat_observation(&current, &mount, started)
     }
 }
 
+struct ScanEntry {
+    name: Vec<u8>,
+    #[cfg(target_os = "macos")]
+    metadata: Option<macos_bulk::Metadata>,
+}
+
+enum ScanEntries<'a> {
+    Names(std::vec::IntoIter<Vec<u8>>, &'a Control),
+    #[cfg(target_os = "macos")]
+    Bulk(macos_bulk::Entries<'a>),
+}
+
+impl Iterator for ScanEntries<'_> {
+    type Item = Result<ScanEntry>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Names(names, control) => names.next().map(|name| {
+                control.check()?;
+                Ok(ScanEntry {
+                    name,
+                    #[cfg(target_os = "macos")]
+                    metadata: None,
+                })
+            }),
+            #[cfg(target_os = "macos")]
+            Self::Bulk(entries) => entries.next(),
+        }
+    }
+}
+
+fn scan_entries<'a>(dir: &File, control: &'a Control) -> Result<ScanEntries<'a>> {
+    control.check()?;
+    #[cfg(target_os = "macos")]
+    if let Some(entries) = macos_bulk::Entries::open(dir, control)? {
+        return Ok(ScanEntries::Bulk(entries));
+    }
+    Ok(ScanEntries::Names(names(dir)?.into_iter(), control))
+}
+
+#[cfg_attr(target_os = "macos", derive(serde::Serialize, serde::Deserialize))]
 struct Node {
     is_dir: bool,
     name: Vec<u8>,
@@ -548,8 +604,11 @@ struct Node {
     files: u64,
     rest_size: u64,
     rest_files: u64,
+    #[cfg_attr(target_os = "macos", serde(skip))]
     dirs: Vec<Node>,
     big: Vec<Node>,
+    #[cfg(target_os = "macos")]
+    stats: macos_incremental::Counts,
 }
 struct Scan<'a> {
     control: &'a Control,
@@ -568,8 +627,28 @@ struct Scan<'a> {
     bytes: u64,
     last_progress: Instant,
     started: u64,
+    #[cfg(target_os = "macos")]
+    dirty: Option<macos_events::Dirty>,
+    #[cfg(target_os = "macos")]
+    uncached_entries: u64,
+    #[cfg(target_os = "macos")]
+    reused_dirs: u64,
 }
 impl Scan<'_> {
+    #[cfg(target_os = "macos")]
+    fn reset_capture(&mut self) {
+        self.errors = 0;
+        self.symlinks = 0;
+        self.special = 0;
+        self.mounts = 0;
+        self.dirs = 0;
+        self.count = 0;
+        self.bytes = 0;
+        self.uncached_entries = 0;
+        self.reused_dirs = 0;
+        self.samples.clear();
+    }
+
     fn error(&mut self, parts: &[Vec<u8>], message: NativeError) {
         self.errors += 1;
         if self.samples.len() < 500 {
@@ -577,12 +656,72 @@ impl Scan<'_> {
                 .push((display(self.root, parts), message.to_string()));
         }
     }
+    #[cfg(any(target_os = "macos", test))]
     fn directory(&mut self, dir: &File, name: Vec<u8>, parts: &mut Vec<Vec<u8>>) -> Result<Node> {
+        self.directory_cached(dir, name, parts, None)
+    }
+    fn directory_cached(
+        &mut self,
+        dir: &File,
+        name: Vec<u8>,
+        parts: &mut Vec<Vec<u8>>,
+        previous: Option<Node>,
+    ) -> Result<Node> {
         self.control.check()?;
+        #[cfg(target_os = "macos")]
+        let before = macos_incremental::Counts::capture(self);
+        #[cfg(target_os = "macos")]
+        if let Some(node) = &previous {
+            if node.stats.errors == 0
+                && node.stats.uncached_entries == 0
+                && self
+                    .dirty
+                    .as_ref()
+                    .is_some_and(|dirty| !dirty.affects(parts))
+                && identity(dir)? == node.identity
+            {
+                node.stats.restore(self, node);
+                return Ok(previous.unwrap());
+            }
+        }
+        let result = self.read_directory(dir, name, parts, previous);
+        #[cfg(target_os = "macos")]
+        let result = result.map(|mut node| {
+            node.stats = macos_incremental::Counts::capture(self).difference(before);
+            node
+        });
+        result
+    }
+    fn read_directory(
+        &mut self,
+        dir: &File,
+        name: Vec<u8>,
+        parts: &mut Vec<Vec<u8>>,
+        previous: Option<Node>,
+    ) -> Result<Node> {
+        let mut previous: std::collections::HashMap<Vec<u8>, Node> = previous
+            .map(|node| {
+                node.dirs
+                    .into_iter()
+                    .map(|child| (child.name.clone(), child))
+                    .collect()
+            })
+            .unwrap_or_default();
         if parts.len() > 512 {
             return Err("Directory nesting exceeds 512".into());
         }
         let meta = dir.metadata().map_err(NativeError::from)?;
+        #[cfg(target_os = "macos")]
+        {
+            let future = |time: std::io::Result<std::time::SystemTime>| {
+                time.ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .is_some_and(|time| time.as_millis() > self.started as u128)
+            };
+            if future(meta.created()) || future(meta.modified()) {
+                self.uncached_entries += 1;
+            }
+        }
         let mut node = Node {
             is_dir: true,
             name,
@@ -594,9 +733,11 @@ impl Scan<'_> {
             rest_files: 0,
             dirs: Vec::new(),
             big: Vec::new(),
+            #[cfg(target_os = "macos")]
+            stats: macos_incremental::Counts::default(),
         };
         self.dirs += 1;
-        let entries = match names(dir) {
+        let entries = match scan_entries(dir, self.control) {
             Ok(v) => v,
             Err(e) if parts.is_empty() => return Err(e),
             Err(e) => {
@@ -604,7 +745,19 @@ impl Scan<'_> {
                 return Ok(node);
             }
         };
-        for name in entries {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.control.check()?;
+                    if parts.is_empty() {
+                        return Err(error);
+                    }
+                    self.error(parts, error);
+                    break;
+                }
+            };
+            let name = entry.name;
             self.control.check()?;
             parts.push(name.clone());
             if self.excludes.iter().any(|e| parts.starts_with(e)) {
@@ -635,10 +788,36 @@ impl Scan<'_> {
                         self.mounts += 1;
                         return Ok(None);
                     }
-                    return self.directory(&file, name.clone(), parts).map(Some);
+                    return self
+                        .directory_cached(&file, name.clone(), parts, previous.remove(&name))
+                        .map(Some);
                 }
-                let (observation, times, size) =
-                    regular_observation(dir, &name, &stat, self.started)?;
+                #[cfg(target_os = "macos")]
+                {
+                    let future = |seconds: i64, nanos: i64| {
+                        seconds >= 0
+                            && seconds as u128 * 1000 + nanos.max(0) as u128 / 1_000_000
+                                > self.started as u128
+                    };
+                    if stat.st_nlink > 1
+                        || future(stat.st_mtime, stat.st_mtime_nsec)
+                        || future(stat.st_birthtime, stat.st_birthtime_nsec)
+                    {
+                        self.uncached_entries += 1;
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                let observed = if let Some(metadata) = entry.metadata {
+                    if !metadata.matches_regular(&stat) {
+                        return Err("File changed during bulk observation".into());
+                    }
+                    mac_stat_observation(&stat, &metadata.mount.to_string(), self.started)
+                } else {
+                    regular_observation(dir, &name, &stat, self.started)
+                };
+                #[cfg(target_os = "linux")]
+                let observed = regular_observation(dir, &name, &stat, self.started);
+                let (observation, times, size) = observed?;
                 if observation["mount"] != self.mount {
                     self.mounts += 1;
                     return Ok(None);
@@ -656,6 +835,8 @@ impl Scan<'_> {
                     rest_files: 0,
                     dirs: Vec::new(),
                     big: Vec::new(),
+                    #[cfg(target_os = "macos")]
+                    stats: macos_incremental::Counts::default(),
                 }))
             })();
             match result {
@@ -719,7 +900,7 @@ fn emit_node(node: &Node, parent: Option<u64>, next: &mut u64, control: &Control
     }
     Ok(())
 }
-fn scan(request: &Value, control: &Control) -> Result<()> {
+fn scan(state: &Path, request: &Value, control: &Control) -> Result<()> {
     let started = Instant::now();
     let (path, file, root) = checked_root(&request["root"])?;
     let min = request["minFileSize"]
@@ -752,15 +933,101 @@ fn scan(request: &Value, control: &Control) -> Result<()> {
         bytes: 0,
         last_progress: Instant::now(),
         started: crate::tree::now_ms(),
+        #[cfg(target_os = "macos")]
+        dirty: None,
+        #[cfg(target_os = "macos")]
+        uncached_entries: 0,
+        #[cfg(target_os = "macos")]
+        reused_dirs: 0,
     };
     emit(&json!({"t":"root","root":root}))?;
-    let tree = scan.directory(
+    #[cfg(not(target_os = "macos"))]
+    let _ = state;
+    #[cfg(target_os = "macos")]
+    let mut session = None;
+    #[cfg(target_os = "macos")]
+    let mut fallback: Option<String> = None;
+    #[cfg(not(target_os = "macos"))]
+    let fallback: Option<String> = None;
+    #[cfg(target_os = "macos")]
+    if request["incremental"] == true {
+        match macos_incremental::Session::prepare(state, request, &file, control) {
+            Ok(prepared) => {
+                fallback = prepared.fallback.clone();
+                session = Some(prepared);
+            }
+            Err(reason) => {
+                control.check()?;
+                fallback = Some(reason.to_string());
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let previous = session.as_mut().and_then(|session| {
+        scan.dirty = Some(session.dirty.clone());
+        session.previous.take()
+    });
+    #[cfg(not(target_os = "macos"))]
+    let previous = None;
+    let tree = scan.directory_cached(
         &file,
         path.file_name()
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_else(|| b"/".to_vec()),
         &mut Vec::new(),
+        previous,
     )?;
+    #[cfg(target_os = "macos")]
+    let mut tree = tree;
+    #[cfg(target_os = "macos")]
+    if let Some(prepared) = &session {
+        let mut cacheable = true;
+        match prepared.changes(control) {
+            Ok(dirty) if dirty.is_empty() => (),
+            Ok(dirty) if scan.reused_dirs > 0 => {
+                // Changes to previously reused folders must be observed before publishing this tree.
+                scan.reset_capture();
+                scan.dirty = Some(dirty);
+                let name = tree.name.clone();
+                tree = scan.directory_cached(&file, name, &mut Vec::new(), Some(tree))?;
+                if prepared
+                    .changes(control)
+                    .map_or(true, |dirty| !dirty.is_empty())
+                {
+                    scan.reset_capture();
+                    scan.dirty = None;
+                    fallback = Some("Full scan used because folders kept changing".into());
+                    cacheable = false;
+                    tree = scan.directory(&file, tree.name.clone(), &mut Vec::new())?;
+                }
+            }
+            Ok(_) => (), // A full baseline keeps its pre-scan checkpoint, so these edits replay next time.
+            Err(reason) => {
+                cacheable = false;
+                fallback = Some(reason.to_string());
+                if scan.reused_dirs > 0 {
+                    scan.reset_capture();
+                    scan.dirty = None;
+                    tree = scan.directory(&file, tree.name.clone(), &mut Vec::new())?;
+                }
+            }
+        }
+        checked_root(&request["root"])?;
+        if cacheable {
+            if let Err(reason) = prepared.save(&tree, control) {
+                control.check()?;
+                fallback = Some(format!("Quick-scan baseline was not saved: {reason}"));
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let method = if scan.reused_dirs > 0 {
+        "incremental"
+    } else {
+        "walk"
+    };
+    #[cfg(not(target_os = "macos"))]
+    let method = "walk";
     checked_root(&request["root"])?;
     control.check()?;
     emit_node(&tree, None, &mut 1, control)?;
@@ -768,7 +1035,7 @@ fn scan(request: &Value, control: &Control) -> Result<()> {
         emit(&json!({"t":"error","path":path,"message":message}))?;
     }
     emit(
-        &json!({"t":"done","size":tree.size,"files":tree.files,"dirs":scan.dirs,"errors":scan.errors,"ms":started.elapsed().as_millis() as u64,"method":"walk","fallback":null,"policy":"regular-files-single-mount-no-symlink-traversal","skipped":{"symlinks":scan.symlinks,"special":scan.special,"mounts":scan.mounts},"coverage":if scan.errors==0 {"complete"} else {"partial"}}),
+        &json!({"t":"done","size":tree.size,"files":tree.files,"dirs":scan.dirs,"errors":scan.errors,"ms":started.elapsed().as_millis() as u64,"method":method,"fallback":fallback,"policy":"regular-files-single-mount-no-symlink-traversal","skipped":{"symlinks":scan.symlinks,"special":scan.special,"mounts":scan.mounts},"coverage":if scan.errors==0 {"complete"} else {"partial"}}),
     ).map_err(NativeError::from)
 }
 #[cfg(target_os = "macos")]
@@ -1356,7 +1623,7 @@ pub fn dispatch(
         }
         "resolve" => resolved(request).map(Some),
         "scan" => {
-            scan(request, control)?;
+            scan(state, request, control)?;
             Ok(None)
         }
         "cleanup" => {
@@ -1538,6 +1805,12 @@ mod tests {
             bytes: 0,
             last_progress: Instant::now(),
             started: crate::tree::now_ms(),
+            #[cfg(target_os = "macos")]
+            dirty: None,
+            #[cfg(target_os = "macos")]
+            uncached_entries: 0,
+            #[cfg(target_os = "macos")]
+            reused_dirs: 0,
         };
         let node = scan
             .directory(&file, b"root".to_vec(), &mut Vec::new())
@@ -1558,6 +1831,82 @@ mod tests {
             .directory(&file, b"root".to_vec(), &mut Vec::new())
             .unwrap();
         assert_eq!(node.size, 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bulk_metadata_matches_fresh_observation_and_rejects_replaced_files() {
+        let fixture = Fixture::new();
+        let root = fixture.dir("root");
+        fs::write(root.join("leaf"), b"old").unwrap();
+        symlink("leaf", root.join("link")).unwrap();
+        let dir = open_root(&root).unwrap();
+        let entries = macos_bulk::read(&dir, &Control::testing())
+            .unwrap()
+            .expect("Bulk API must be available on APFS");
+        let metadata = entries
+            .iter()
+            .find(|entry| entry.name == b"leaf")
+            .unwrap()
+            .metadata
+            .unwrap();
+        assert_ne!(
+            entries
+                .iter()
+                .find(|entry| entry.name == b"link")
+                .unwrap()
+                .metadata
+                .unwrap()
+                .kind,
+            1
+        );
+        File::options()
+            .write(true)
+            .open(root.join("leaf"))
+            .unwrap()
+            .set_len(57)
+            .unwrap();
+        let stat = stat_at(&dir, b"leaf").unwrap();
+        assert!(metadata.matches_regular(&stat));
+        let started = crate::tree::now_ms();
+        let bulk = mac_stat_observation(&stat, &metadata.mount.to_string(), started).unwrap();
+        let ordinary = regular_observation(&dir, b"leaf", &stat, started).unwrap();
+        assert_eq!(bulk.0, ordinary.0);
+        assert_eq!(bulk.1.created_at, ordinary.1.created_at);
+        assert_eq!(bulk.1.last_written_at, ordinary.1.last_written_at);
+        assert_eq!(bulk.2, 57);
+        assert_eq!(bulk.2, ordinary.2);
+        fs::rename(root.join("leaf"), root.join("original")).unwrap();
+        fs::write(root.join("leaf"), b"replacement").unwrap();
+        assert!(!metadata.matches_regular(&stat_at(&dir, b"leaf").unwrap()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bulk_system_file_uses_physical_volume_identity() {
+        let dir = open_root(Path::new("/usr/bin")).unwrap();
+        let entries = macos_bulk::read(&dir, &Control::testing())
+            .unwrap()
+            .unwrap();
+        let metadata = entries
+            .iter()
+            .find(|entry| entry.name == b"true")
+            .unwrap()
+            .metadata
+            .unwrap();
+        let stat = stat_at(&dir, b"true").unwrap();
+        let ordinary = regular_observation(&dir, b"true", &stat, crate::tree::now_ms()).unwrap();
+        assert!(
+            metadata.matches_regular(&stat),
+            "bulk {metadata:?}, stat dev={} inode={} mode={}, dir mount={}, ordinary={}",
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mode,
+            mount(&dir).unwrap(),
+            ordinary.0
+        );
+        assert_eq!(metadata.mount.to_string(), mount(&dir).unwrap());
+        assert_eq!(ordinary.0["mount"], metadata.mount.to_string());
     }
     #[test]
     fn cleanup_default_off_depth_guard_and_no_replay() {
@@ -1792,6 +2141,12 @@ mod tests {
             bytes: 0,
             last_progress: Instant::now(),
             started: crate::tree::now_ms(),
+            #[cfg(target_os = "macos")]
+            dirty: None,
+            #[cfg(target_os = "macos")]
+            uncached_entries: 0,
+            #[cfg(target_os = "macos")]
+            reused_dirs: 0,
         };
         let tree = scan
             .directory(&file, b"root".to_vec(), &mut Vec::new())
@@ -1844,6 +2199,12 @@ mod tests {
             bytes: 0,
             last_progress: Instant::now(),
             started: crate::tree::now_ms(),
+            #[cfg(target_os = "macos")]
+            dirty: None,
+            #[cfg(target_os = "macos")]
+            uncached_entries: 0,
+            #[cfg(target_os = "macos")]
+            reused_dirs: 0,
         };
         let tree = scan
             .directory(&file, b"root".to_vec(), &mut Vec::new())

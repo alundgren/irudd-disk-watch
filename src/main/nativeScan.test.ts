@@ -99,6 +99,50 @@ test('native controller preserves exact names, timestamps, grouping, history and
   }
 })
 
+platformTest.skipIf(process.platform !== 'darwin')(
+  'quick scans retain history, refresh changed files, and preserve cleanup validation',
+  async () => {
+    const f = await fixture()
+    try {
+      const quick = () =>
+        runScan({
+          store: f.store,
+          scannerExe: f.connection.scannerExe,
+          stateDir: f.connection.stateDir,
+          diskId: f.disk.id,
+          minFileSize: 10,
+          incremental: true,
+          onProgress: () => {},
+          signal: new AbortController().signal,
+        })
+      const baseline = await quick()
+      expect(baseline.status).toBe('complete')
+      expect(f.store.latestCompleteScan(f.disk.id)?.method).toBe('walk')
+      expect((await quick()).status).toBe('complete')
+      expect(f.store.latestCompleteScan(f.disk.id)).toMatchObject({ method: 'incremental', size: 35, files: 3 })
+      const deep = f.store.children(baseline.scanId, f.disk.rootNode).find((row) => row.name === 'deep')!
+      const leaf = f.store.children(baseline.scanId, deep.nodeId).find((row) => row.name === 'large')!
+      await workerOperation(f.connection, 'cleanup', { root: f.rootInfo, enabled: true })
+      f.store.setCleanupEnabled(f.disk.id, true)
+      const staged = f.store.stageDelete(f.disk.id, leaf.nodeId)
+      // Replacing a cached file must still be rejected by the independent live deletion checks.
+      const replacement = join(f.root, 'replacement')
+      writeFileSync(replacement, Buffer.alloc(40))
+      const { renameSync } = await import('node:fs')
+      renameSync(replacement, join(f.root, 'deep/large'))
+      const deleted = await executeNativeDelete(f.store, f.connection, f.disk.id, [staged])
+      expect(deleted.failed).toHaveLength(1)
+      expect(readFileSync(join(f.root, 'deep/large'))).toHaveLength(40)
+      expect((await quick()).status).toBe('complete')
+      expect(f.store.latestCompleteScan(f.disk.id)).toMatchObject({ size: 55, files: 3 })
+      expect(f.store.listScans(f.disk.id).find((scan) => scan.id === baseline.scanId)?.size).toBe(35)
+      expect(readFileSync(join(f.outside, 'sentinel'), 'utf8')).toBe('safe')
+    } finally {
+      f.store.db.close()
+    }
+  },
+)
+
 test('cancelled native scans retain previous complete history and commit no partial entries', async () => {
   const f = await fixture()
   try {

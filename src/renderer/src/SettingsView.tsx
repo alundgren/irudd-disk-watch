@@ -1,6 +1,7 @@
 import type { Disk, HideChange, ScanSummary } from '../../shared/types'
 import { useState } from 'react'
 import { api, formatBytes, formatCount, formatWhen, isWindows, isHistorical, machineLabel } from './api'
+import { MacDiskAccess } from './MacDiskAccess'
 
 interface SettingsViewProps {
   disk: Disk
@@ -124,6 +125,7 @@ export function SettingsView({
           <p className="muted">Saved history only. This machine is unavailable for scanning or file actions.</p>
         )}
       </section>
+      {disk.machine?.kind === 'local' && disk.machine.os === 'macos' && <MacDiskAccess />}
       {!isWindows(disk) && !isHistorical(disk) && (
         <section>
           <h2>Permanent cleanup</h2>
@@ -249,7 +251,11 @@ export function SettingsView({
               {scan.status === 'complete' ? (
                 <span className="muted" title={scan.fallback ?? undefined}>
                   {formatBytes(scan.size)} · {formatCount(scan.files)} files ·{' '}
-                  {((scan.durationMs ?? 0) / 1000).toFixed(1)} s · {scan.method === 'mft' ? 'MFT' : 'folder walk'}
+                  {((scan.durationMs ?? 0) / 1000).toFixed(1)} s ·{' '}
+                  {scan.method === 'mft' ? 'MFT' : scan.method === 'incremental' ? 'quick scan' : 'folder walk'}
+                  {disk.machine?.os === 'macos' && scan.fallback && (
+                    <span className="scan-message"> · {scan.fallback}</span>
+                  )}
                   {scan.coverage === 'partial' ? ' · partial coverage, unavailable for Changes' : ''}
                 </span>
               ) : (
