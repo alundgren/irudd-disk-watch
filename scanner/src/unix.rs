@@ -1439,12 +1439,11 @@ mod linux_trust {
         user: &str,
         gid: u32,
     ) -> bool {
-        let lines: Vec<Vec<&str>> = group
-            .lines()
-            .map(|line| line.split(':').collect::<Vec<_>>())
-            .filter(|fields| fields.get(2).and_then(|g| g.parse::<u32>().ok()) == Some(gid))
-            .collect();
-        let [fields] = lines.as_slice() else {
+        let Some(entries) = account_lines(group, 2) else {
+            return false;
+        };
+        let lines: Vec<_> = entries.into_iter().filter(|(id, _)| *id == gid).collect();
+        let [(_, fields)] = lines.as_slice() else {
             return false;
         };
         let locked = |password: &str| matches!(password, "" | "x" | "!" | "*" | "!*");
@@ -1469,10 +1468,35 @@ mod linux_trust {
 
     /// True when no account other than `user` has `gid` as its primary group.
     pub(super) fn only_primary_member(passwd: &str, user: &str, gid: u32) -> bool {
-        passwd.lines().all(|line| {
-            let fields: Vec<_> = line.split(':').collect();
-            fields.len() < 4 || fields[0] == user || fields[3].parse::<u32>() != Ok(gid)
+        account_lines(passwd, 3).is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|(id, fields)| fields[0] == user || *id != gid)
         })
+    }
+
+    /// Splits `/etc/group` or `/etc/passwd` into entries with their numeric id at `field`.
+    /// glibc reads ids with `strtoul`, which also accepts leading spaces and signs, so
+    /// `devops:x: 1001:mallory` still grants gid 1001. Any id that is not plain ASCII digits
+    /// fitting in 32 bits therefore returns `None` (not private) instead of being skipped.
+    /// Blank lines, comments and NIS `+`/`-` lines are ignored.
+    fn account_lines(text: &str, field: usize) -> Option<Vec<(u32, Vec<&str>)>> {
+        text.lines()
+            .filter(|line| {
+                !line.trim().is_empty()
+                    && !line.starts_with('#')
+                    && !line.starts_with('+')
+                    && !line.starts_with('-')
+            })
+            .map(|line| {
+                let fields: Vec<_> = line.split(':').collect();
+                let id = fields.get(field)?;
+                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                Some((id.parse::<u32>().ok()?, fields))
+            })
+            .collect()
     }
 
     fn user_name(uid: u32) -> Option<String> {
@@ -2800,6 +2824,24 @@ mod tests {
         assert!(!private(group, Some("dev:x::\n")));
         assert!(!private(group, Some("dev:!::mallory\n")));
         assert!(!private(group, Some("dev:!:mallory:\n")));
+        // glibc's strtoul accepts these ids, so lines we cannot read as plain digits refuse.
+        for odd in [
+            " 1001",
+            "-1001",
+            "+1001",
+            "1001 ",
+            "",
+            "0x3e9",
+            "99999999999",
+        ] {
+            assert!(
+                !private(&format!("{group}devops:x:{odd}:mallory\n"), None),
+                "{odd:?}"
+            );
+        }
+        assert!(!private(&format!("{group}broken\n"), None));
+        // Blank lines, comments and NIS lines are not group entries.
+        assert!(private(&format!("# note\n\n{group}+:::\n-nis::\n"), None));
         assert!(!linux_trust::local_accounts_only(
             "passwd: compat\ngroup: compat\n"
         ));
@@ -2807,6 +2849,11 @@ mod tests {
         assert!(linux_trust::only_primary_member(passwd, "dev", 1001));
         assert!(!linux_trust::only_primary_member(
             &format!("{passwd}other:x:1002:1001::/home/other:/bin/sh\n"),
+            "dev",
+            1001
+        ));
+        assert!(!linux_trust::only_primary_member(
+            &format!("{passwd}other:x:1002: 1001::/home/other:/bin/sh\n"),
             "dev",
             1001
         ));
