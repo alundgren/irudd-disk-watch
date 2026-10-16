@@ -22,6 +22,8 @@ export interface BulkPlan {
 export interface BulkOutcome {
   queued: number
   skipped: SkippedItem[]
+  /** Why queueing ended before every item was tried. */
+  stopped?: string
 }
 
 export const TOP_LEVEL_REASON = 'Root or top-level item. Only items at least two levels deep can be deleted.'

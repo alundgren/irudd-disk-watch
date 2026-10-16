@@ -26,7 +26,7 @@ vi.stubGlobal('window', {
   ),
 })
 const { BulkQueueDialog } = await import('./BulkQueueDialog')
-const { filterQuery, matchSummary } = await import('./SpaceView')
+const { ageProblem, filterQuery, matchSummary } = await import('./SpaceView')
 
 const ids = (selection: Selection) => [...selection.ids].sort((a, b) => a - b)
 const order = [10, 11, 12, 13, 14]
@@ -46,10 +46,18 @@ describe('row selection', () => {
     expect(ids(selection)).toEqual([10, 11, 14])
     selection = clickSelection(selection, order, 1, { toggle: true })
     expect(ids(selection)).toEqual([10, 14])
-    expect(selection.anchor).toBe(1)
+    expect(selection.anchor).toBe(11)
     // Cmd/Ctrl+Shift adds the range to the selection.
     expect(ids(clickSelection(selection, order, 3, { shift: true, toggle: true }))).toEqual([10, 11, 12, 13, 14])
     expect(ids(clickSelection(emptySelection, order, 2, { shift: true }))).toEqual([12])
+  })
+
+  it('keeps the range anchor on its row when the list reorders, and drops it once the row is gone', () => {
+    const anchored = clickSelection(emptySelection, order, 1, {})
+    expect(ids(clickSelection(anchored, [13, 12, 11, 10], 0, { shift: true }))).toEqual([11, 12, 13])
+    const gone = clickSelection(anchored, [20, 21, 22], 2, { shift: true })
+    expect(ids(gone)).toEqual([22])
+    expect(gone.anchor).toBe(22)
   })
 
   it('selects all rows and drops rows a new search no longer lists', () => {
@@ -80,11 +88,11 @@ describe('rectangle selection', () => {
 
   it('replaces the selection, or adds to it with Cmd/Ctrl, and anchors on the pressed row', () => {
     const before = clickSelection(emptySelection, order, 4, {})
-    const replaced = dragSelection(before, order, [1, 2], false, 2)
+    const replaced = dragSelection(before, order, [1, 2], false, 12)
     expect(ids(replaced)).toEqual([11, 12])
-    expect(replaced.anchor).toBe(2)
-    expect(ids(dragSelection(before, order, [1, 2], true, 2))).toEqual([11, 12, 14])
-    expect(dragSelection(before, order, [], false, null)).toEqual({ ids: new Set(), anchor: 4 })
+    expect(replaced.anchor).toBe(12)
+    expect(ids(dragSelection(before, order, [1, 2], true, 12))).toEqual([11, 12, 14])
+    expect(dragSelection(before, order, [], false, null)).toEqual({ ids: new Set(), anchor: 14 })
   })
 })
 
@@ -197,6 +205,7 @@ describe('confirm dialog', () => {
     expect(html).toContain(TOP_LEVEL_REASON)
     expect(html).toContain('2 items already in the queue are inside selected folders')
     expect(html).toContain('scan this root again before queueing more items')
+    expect(html).toContain('items inside it that are hidden from views. The size above does not count them')
     expect(html).toContain('Queue 12 items</button>')
   })
 
@@ -220,6 +229,9 @@ describe('filters', () => {
     expect(filterQuery({ name: '', days: '-3' })).toBeNull()
     expect(filterQuery({ name: '%_ ', days: '' })).toEqual({ nameContains: '%_ ', olderThanDays: undefined })
     expect(filterQuery({ name: '', days: '30' })).toEqual({ nameContains: undefined, olderThanDays: 30 })
+    expect(ageProblem('-3')).toBe('Enter 0 or more days')
+    expect(ageProblem('')).toBeNull()
+    expect(ageProblem('0')).toBeNull()
   })
 
   it('names the cap when results are limited', () => {

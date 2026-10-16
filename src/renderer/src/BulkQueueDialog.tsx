@@ -18,10 +18,13 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
   const stop = useRef<AbortController | null>(null)
   const [done, setDone] = useState<number | null>(null)
   const [outcome, setOutcome] = useState<BulkOutcome | null>(null)
+  const unmounted = useRef(false)
   useEffect(() => {
     const origin = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    unmounted.current = false
     dialog.current?.showModal()
     return () => {
+      unmounted.current = true
       stop.current?.abort()
       dialog.current?.close()
       if (origin?.isConnected) origin.focus()
@@ -43,6 +46,13 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
         if (running) stop.current?.abort()
         else onClose()
       }}
+      onClose={() => {
+        // The browser can close a modal on its own; keep the parent's state in step.
+        if (!unmounted.current) {
+          stop.current?.abort()
+          onClose()
+        }
+      }}
       aria-labelledby="bulk-title"
     >
       {outcome ? (
@@ -50,6 +60,7 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
           <h2 id="bulk-title">
             {outcome.queued ? `Queued ${items(outcome.queued)} for deletion` : 'Nothing was queued'}
           </h2>
+          {outcome.stopped && <p role="alert">{outcome.stopped}</p>}
           <p className="muted">Review the queue above the tabs, then use Execute delete when you are ready.</p>
         </>
       ) : (
@@ -84,6 +95,11 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
           <h3 className="bulk-subtitle">Skipped {items(skipped.length)}</h3>
           <SkippedList items={skipped} />
         </section>
+      )}
+      {!outcome && plan.queue.some((row) => row.kind === 'dir') && (
+        <p className="muted small">
+          Deleting a folder also deletes items inside it that are hidden from views. The size above does not count them.
+        </p>
       )}
       {!outcome && plan.queue.length > 0 && (
         <p className="muted small">

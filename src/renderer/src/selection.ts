@@ -1,7 +1,7 @@
 /** Row selection for the filtered Space list. Rows are identified by node ID, ranges by list position. */
 export interface Selection {
   ids: ReadonlySet<number>
-  /** Position that Shift-click and Shift+arrow ranges start from. */
+  /** Node ID that Shift-click and Shift+arrow ranges start from. Ignored once it is no longer listed. */
   anchor: number | null
 }
 
@@ -27,32 +27,31 @@ export function clickSelection(
 ): Selection {
   const id = order[index]
   if (id === undefined) return current
-  if (mods.shift && current.anchor !== null) {
-    const ids = range(order, current.anchor, index)
+  const from = current.anchor === null ? -1 : order.indexOf(current.anchor)
+  if (mods.shift && from >= 0) {
+    const ids = range(order, from, index)
     return { ids: new Set(mods.toggle ? [...current.ids, ...ids] : ids), anchor: current.anchor }
   }
   if (mods.toggle) {
     const ids = new Set(current.ids)
     if (ids.has(id)) ids.delete(id)
     else ids.add(id)
-    return { ids, anchor: index }
+    return { ids, anchor: id }
   }
-  return { ids: new Set([id]), anchor: index }
+  return { ids: new Set([id]), anchor: id }
 }
 
 export function selectAll(order: readonly number[]): Selection {
-  return { ids: new Set(order), anchor: order.length ? 0 : null }
+  return { ids: new Set(order), anchor: order[0] ?? null }
 }
 
 /** Keeps only rows still listed, for example after a new search. */
 export function pruneSelection(current: Selection, order: readonly number[]): Selection {
   const listed = new Set(order)
   const ids = [...current.ids].filter((id) => listed.has(id))
-  if (ids.length === current.ids.size && (current.anchor === null || current.anchor < order.length)) return current
-  return {
-    ids: new Set(ids),
-    anchor: ids.length && current.anchor !== null && current.anchor < order.length ? current.anchor : null,
-  }
+  const anchor = current.anchor !== null && listed.has(current.anchor) ? current.anchor : null
+  if (ids.length === current.ids.size && anchor === current.anchor) return current
+  return { ids: new Set(ids), anchor }
 }
 
 /** Pointer travel before a press on a row becomes a rectangle selection instead of a click. */
@@ -100,8 +99,8 @@ export function dragSelection(
   order: readonly number[],
   hits: readonly number[],
   additive: boolean,
-  startIndex: number | null,
+  startId: number | null,
 ): Selection {
   const ids = hits.map((index) => order[index]).filter((id) => id !== undefined)
-  return { ids: new Set(additive ? [...before.ids, ...ids] : ids), anchor: startIndex ?? before.anchor }
+  return { ids: new Set(additive ? [...before.ids, ...ids] : ids), anchor: startId ?? before.anchor }
 }

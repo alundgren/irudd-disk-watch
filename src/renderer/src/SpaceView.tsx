@@ -11,7 +11,7 @@ import type {
 } from '../../shared/types'
 import { api, formatBytes, formatCount, isWindows } from './api'
 import { BulkQueueDialog } from './BulkQueueDialog'
-import { planBulkQueue, type BulkOutcome, type BulkPlan } from './bulkQueue'
+import { errorText, planBulkQueue, type BulkOutcome, type BulkPlan } from './bulkQueue'
 import { FilteredList } from './FilteredList'
 import { LazyTree } from './LazyTree'
 import { NodeCells } from './NodeCells'
@@ -60,6 +60,13 @@ export function filterQuery(filters: Filters): { nameContains?: string; olderTha
   return nameContains === undefined && olderThanDays === undefined ? null : { nameContains, olderThanDays }
 }
 
+/** Inline message for an age the filter cannot use, or null. */
+export function ageProblem(days: string): string | null {
+  if (days.trim() === '') return null
+  const value = Number(days)
+  return Number.isFinite(value) && value >= 0 ? null : 'Enter 0 or more days'
+}
+
 export function matchSummary(result: Pick<SearchResult, 'rows' | 'total'>): string {
   if (result.total > result.rows.length)
     return `Showing the largest ${formatCount(result.rows.length)} of ${formatCount(result.total)} matches`
@@ -81,7 +88,7 @@ export function SpaceView({
 }: SpaceViewProps) {
   const scan = scans.find((s) => s.id === scanId)!
   const revision = disk.hides.revision
-  const stagedIds = new Set(staged.map((item) => item.nodeId))
+  const stagedIds = useMemo(() => new Set(staged.map((item) => item.nodeId)), [staged])
   const [sort, setSort] = useState<'size' | 'written'>('size')
   const [filters, setFilters] = useState<Filters>({ name: '', days: '' })
   const [query, setQuery] = useState(() => filterQuery(filters))
@@ -89,7 +96,7 @@ export function SpaceView({
   const [searchError, setSearchError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [selection, setSelection] = useState<Selection>(emptySelection)
-  const [plan, setPlan] = useState<BulkPlan | null>(null)
+  const [plan, setPlan] = useState<(BulkPlan & { id: number }) | null>(null)
   const order = useCallback(
     (items: TreeRow[]) =>
       [...items].sort((a, b) =>
@@ -123,7 +130,7 @@ export function SpaceView({
           ),
         )
       },
-      (error: Error) => live && setSearchError(error.message),
+      (error: unknown) => live && setSearchError(errorText(error)),
     )
     return () => {
       live = false
@@ -141,22 +148,25 @@ export function SpaceView({
     setSelection(emptySelection)
   }
 
-  const renderRow = (row: TreeRow, siblings: TreeRow[]) => {
-    const parentSize = siblings.reduce((sum, s) => sum + s.size, 0)
-    const isStaged = stagedIds.has(row.nodeId)
-    return {
-      name: (
-        <span className={`name kind-${row.kind}${isStaged ? ' staged-row' : ''}`}>
-          {row.kind !== 'rest' && <NodeIcon kind={row.kind} />}
-          <span className="node-name">{row.name}</span>
-          {isStaged && <span className="tag staged">queued</span>}
-        </span>
-      ),
-      cells: (
-        <NodeCells row={row} share={parentSize > 0 ? row.size / parentSize : 0} shareLabel="of the folder above" />
-      ),
-    }
-  }
+  const renderRow = useCallback(
+    (row: TreeRow, siblings: TreeRow[]) => {
+      const parentSize = siblings.reduce((sum, s) => sum + s.size, 0)
+      const isStaged = stagedIds.has(row.nodeId)
+      return {
+        name: (
+          <span className={`name kind-${row.kind}${isStaged ? ' staged-row' : ''}`}>
+            {row.kind !== 'rest' && <NodeIcon kind={row.kind} />}
+            <span className="node-name">{row.name}</span>
+            {isStaged && <span className="tag staged">queued</span>}
+          </span>
+        ),
+        cells: (
+          <NodeCells row={row} share={parentSize > 0 ? row.size / parentSize : 0} shareLabel="of the folder above" />
+        ),
+      }
+    },
+    [stagedIds],
+  )
   const context = (row: TreeRow, event: MouseEvent, pathDepth: number) => {
     if (row.kind !== 'rest')
       onContext(
@@ -164,6 +174,7 @@ export function SpaceView({
         event,
       )
   }
+  const agePrompt = ageProblem(filters.days)
 
   return (
     <div className="view">
@@ -196,7 +207,12 @@ export function SpaceView({
               </span>
               <button
                 className="danger"
-                onClick={() => setPlan(planBulkQueue(selected, staged, queueBlocked, isWindows(disk)))}
+                onClick={() =>
+                  setPlan({
+                    ...planBulkQueue(selected, staged, queueBlocked, isWindows(disk)),
+                    id: (plan?.id ?? 0) + 1,
+                  })
+                }
               >
                 Queue for deletion…
               </button>
@@ -239,10 +255,17 @@ export function SpaceView({
             step={1}
             inputMode="numeric"
             aria-label="Last written more than this many days ago"
+            aria-invalid={agePrompt !== null}
+            aria-describedby={agePrompt ? 'age-problem' : undefined}
             value={filters.days}
             onChange={(event) => setFilters({ ...filters, days: event.target.value })}
           />
           days
+          {agePrompt && (
+            <span id="age-problem" className="filter-problem" role="alert">
+              {agePrompt}
+            </span>
+          )}
         </label>
       </div>
       {active ? (
@@ -284,6 +307,7 @@ export function SpaceView({
       )}
       {plan && (
         <BulkQueueDialog
+          key={plan.id}
           plan={plan}
           onQueue={async (queue, signal, onProgress) => {
             const outcome = await onQueueMany(queue, signal, onProgress)

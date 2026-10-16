@@ -1493,3 +1493,10 @@ button.map-hit:focus-visible {
   align-items: flex-start;
   gap: 2px;
 }
+.age-filter {
+  flex-wrap: wrap;
+}
+.filter-problem {
+  flex-basis: 100%;
+  color: var(--danger);
+}
