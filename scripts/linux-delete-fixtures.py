@@ -39,8 +39,17 @@ def mounts_under(path):
     return sorted(found, key=len, reverse=True)
 
 
+SCRATCH_MARKER = '.dw-fixture-scratch'
+
+
+def account_marker(scratch, name):
+    return scratch / f'.created-{name}'
+
+
 def cleanup(scratch):
     scratch = Path(scratch).resolve()
+    if not (scratch / SCRATCH_MARKER).is_file():
+        raise SystemExit(f'Refusing to clean {scratch}: it has no {SCRATCH_MARKER} marker')
     mnt = scratch / 'mnt'
     if mnt.is_dir() and mounts_under(mnt):
         # Writable again so immutable/append-only flags can be cleared before unmounting.
@@ -60,10 +69,18 @@ def cleanup(scratch):
     for path in (scratch / 'state', scratch / 'outside'):
         if path.exists():
             subprocess.run(['rm', '-rf', '--one-file-system', str(path)], check=False)
-    if subprocess.run(['id', TEST_USER], capture_output=True).returncode == 0:
-        sudo('userdel', TEST_USER, check=False)
-    if subprocess.run(['getent', 'group', TEST_GROUP], capture_output=True).returncode == 0:
-        sudo('groupdel', TEST_GROUP, check=False)
+    # Only accounts this harness created (recorded by a marker) are removed.
+    for name, remove in ((TEST_USER, 'userdel'), (TEST_GROUP, 'groupdel')):
+        marker = account_marker(scratch, name)
+        if marker.exists():
+            if exists(name, remove == 'groupdel'):
+                sudo(remove, name)
+            marker.unlink()
+
+
+def exists(name, group=False):
+    command = ['getent', 'group' if group else 'passwd', name]
+    return subprocess.run(command, capture_output=True).returncode == 0
 
 
 class Worker:
@@ -125,6 +142,10 @@ class Run:
 
     def setup(self):
         cleanup(self.scratch)
+        for name, group in ((TEST_USER, False), (TEST_USER, True), (TEST_GROUP, True)):
+            if exists(name, group):
+                raise SystemExit(f'Refusing to start: {"group" if group else "user"} {name} already exists '
+                                 'and was not created by this harness')
         image = self.scratch / 'fixtures.img'
         subprocess.run(['truncate', '-s', '512M', str(image)], check=True)
         subprocess.run(['/usr/sbin/mkfs.ext4', '-q', '-F', '-E', 'root_owner=0:0', str(image)], check=True)
@@ -135,7 +156,9 @@ class Run:
         (self.outside / 'sentinel').write_text('safe')
         (self.scratch / 'state').mkdir(mode=0o700)
         sudo('useradd', '-M', '-r', '-s', '/usr/sbin/nologin', TEST_USER)
+        account_marker(self.scratch, TEST_USER).touch()
         sudo('groupadd', TEST_GROUP)
+        account_marker(self.scratch, TEST_GROUP).touch()
         sudo('usermod', '-aG', TEST_GROUP, TEST_USER)
         self.worker.result('hello')
         assert self.worker.worker['capabilities'].get('linuxPathTrust') is True, self.worker.worker

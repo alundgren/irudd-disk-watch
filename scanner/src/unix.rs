@@ -1368,7 +1368,11 @@ mod linux_trust {
     /// 8-byte entries (tag, permissions, id). Named user or group entries grant access to
     /// accounts beyond the owner, group and others in the mode bits.
     pub(super) fn acl_names_others(value: &[u8]) -> bool {
-        if value.len() < 4 || !(value.len() - 4).is_multiple_of(8) {
+        // Only version 2 is defined; anything else is treated as untrusted rather than guessed.
+        if value.len() < 4
+            || value[..4] != 2u32.to_le_bytes()
+            || !(value.len() - 4).is_multiple_of(8)
+        {
             return true;
         }
         value[4..].chunks_exact(8).any(|entry| {
@@ -1405,19 +1409,61 @@ mod linux_trust {
     }
 
     /// Accounts must come only from local files, so the files read here are complete.
+    /// A database listed more than once is refused, since which line wins is not obvious.
     pub(super) fn local_accounts_only(nsswitch: &str) -> bool {
         let sources = |database: &str| {
-            nsswitch.lines().find_map(|line| {
-                let line = line.split('#').next().unwrap_or("");
-                let (key, value) = line.split_once(':')?;
-                (key.trim() == database).then(|| value.split_whitespace().collect::<Vec<_>>())
-            })
+            nsswitch
+                .lines()
+                .filter_map(|line| {
+                    let line = line.split('#').next().unwrap_or("");
+                    let (key, value) = line.split_once(':')?;
+                    (key.trim() == database).then(|| value.split_whitespace().collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>()
         };
         ["passwd", "group"].iter().all(|database| {
             matches!(
-                sources(database).as_deref(),
-                Some(["files"]) | Some(["files", "systemd"])
+                sources(database).as_slice(),
+                [only] if matches!(only.as_slice(), ["files"] | ["files", "systemd"])
             )
+        })
+    }
+
+    /// True when `/etc/group` has exactly one line for `gid`, named `user`, with no listed
+    /// members and no usable group password. Several lines can share a gid (for example
+    /// `dev:x:1001:` and `devops:x:1001:mallory`), and each grants its members that group,
+    /// so all lines are read directly instead of asking `getgrgid_r` for the first one.
+    pub(super) fn sole_private_group(
+        group: &str,
+        gshadow: Option<&str>,
+        user: &str,
+        gid: u32,
+    ) -> bool {
+        let lines: Vec<Vec<&str>> = group
+            .lines()
+            .map(|line| line.split(':').collect::<Vec<_>>())
+            .filter(|fields| fields.get(2).and_then(|g| g.parse::<u32>().ok()) == Some(gid))
+            .collect();
+        let [fields] = lines.as_slice() else {
+            return false;
+        };
+        let locked = |password: &str| matches!(password, "" | "x" | "!" | "*" | "!*");
+        if fields.len() != 4 || fields[0] != user || !fields[3].is_empty() || !locked(fields[1]) {
+            return false;
+        }
+        // gshadow can hold a group password (usable with newgrp) and its own member and
+        // administrator lists. `x` there is not a placeholder, so it does not count as locked.
+        gshadow.is_none_or(|gshadow| {
+            gshadow
+                .lines()
+                .map(|line| line.split(':').collect::<Vec<_>>())
+                .filter(|entry| entry[0] == user)
+                .all(|entry| {
+                    entry.len() == 4
+                        && matches!(entry[1], "" | "!" | "*" | "!*")
+                        && entry[2].is_empty()
+                        && entry[3].is_empty()
+                })
         })
     }
 
@@ -1453,34 +1499,11 @@ mod linux_trust {
         )
     }
 
-    /// Group name and whether its supplementary member list is empty.
-    fn group(gid: u32) -> Option<(String, bool)> {
-        let mut buffer = vec![0u8; 256 * 1024];
-        let mut entry: libc::group = unsafe { std::mem::zeroed() };
-        let mut found = std::ptr::null_mut();
-        let code = unsafe {
-            libc::getgrgid_r(
-                gid,
-                &mut entry,
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                &mut found,
-            )
-        };
-        if code != 0 || found.is_null() {
-            return None;
-        }
-        let name = unsafe { CStr::from_ptr(entry.gr_name) }
-            .to_str()
-            .ok()?
-            .to_owned();
-        let empty = entry.gr_mem.is_null() || unsafe { (*entry.gr_mem).is_null() };
-        Some((name, empty))
-    }
-
-    /// The effective group when it is this user's own group: named like the user, with no
-    /// listed members and no other account using it as a primary group. Any read failure
-    /// means "not private".
+    /// The effective group when it is this user's own group: one `/etc/group` line named like
+    /// the user, with no members or group password, and no other account using it as a
+    /// primary group. Any read failure means "not private", except an unreadable or missing
+    /// `/etc/gshadow`: it is root-only on common distributions, and only root can put a
+    /// password or members there, so skipping it does not let another user join the group.
     pub(super) fn private_group() -> Option<u32> {
         let nsswitch = fs::read_to_string("/etc/nsswitch.conf").ok()?;
         if !local_accounts_only(&nsswitch) {
@@ -1488,9 +1511,23 @@ mod linux_trust {
         }
         let gid = unsafe { libc::getegid() };
         let user = user_name(unsafe { libc::geteuid() })?;
-        let (name, no_members) = group(gid)?;
+        let group = fs::read_to_string("/etc/group").ok()?;
+        let gshadow = match fs::read_to_string("/etc/gshadow") {
+            Ok(text) => Some(text),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                None
+            }
+            Err(_) => return None,
+        };
         let passwd = fs::read_to_string("/etc/passwd").ok()?;
-        (name == user && no_members && only_primary_member(&passwd, &user, gid)).then_some(gid)
+        (sole_private_group(&group, gshadow.as_deref(), &user, gid)
+            && only_primary_member(&passwd, &user, gid))
+        .then_some(gid)
     }
 }
 
@@ -2740,6 +2777,30 @@ mod tests {
         ));
         assert!(!linux_trust::local_accounts_only("passwd: files\n"));
         assert!(!linux_trust::local_accounts_only(
+            "passwd: files\ngroup: files\npasswd: files ldap\n"
+        ));
+        assert!(!linux_trust::local_accounts_only(
+            "passwd: files\ngroup: files\ngroup: files\n"
+        ));
+        let group = "root:x:0:\nsudo:x:27:dev\ndev:x:1001:\n";
+        let private = |group: &str, gshadow: Option<&str>| {
+            linux_trust::sole_private_group(group, gshadow, "dev", 1001)
+        };
+        assert!(private(group, None));
+        assert!(private(group, Some("root:*::\ndev:!::\n")));
+        assert!(private(group, Some("dev:::\n")));
+        // A second line with the same gid grants its members the group too.
+        assert!(!private(&format!("{group}devops:x:1001:mallory\n"), None));
+        assert!(!private(&format!("{group}devops:x:1001:\n"), None));
+        assert!(!private("dev:x:1001:mallory\n", None));
+        assert!(!private("developers:x:1001:\n", None));
+        assert!(!private("dev:x:1002:\n", None));
+        assert!(!private("dev:$6$hash:1001:\n", None));
+        assert!(!private(group, Some("dev:$6$hash::\n")));
+        assert!(!private(group, Some("dev:x::\n")));
+        assert!(!private(group, Some("dev:!::mallory\n")));
+        assert!(!private(group, Some("dev:!:mallory:\n")));
+        assert!(!linux_trust::local_accounts_only(
             "passwd: compat\ngroup: compat\n"
         ));
         let passwd = "root:x:0:0::/root:/bin/sh\ndev:x:1000:1001::/home/dev:/bin/sh\n";
@@ -2781,6 +2842,9 @@ mod tests {
             entry(0x20, u32::MAX),
         ]);
         assert!(!linux_trust::acl_names_others(&minimal));
+        let mut other_version = minimal.clone();
+        other_version[0] = 3;
+        assert!(linux_trust::acl_names_others(&other_version));
         let named = acl(&[
             entry(0x01, u32::MAX),
             entry(0x02, 1234),
