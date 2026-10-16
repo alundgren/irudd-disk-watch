@@ -373,6 +373,7 @@ function registerIpc() {
     await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles')
   })
   ipcMain.handle('children', (_event, scanId, nodeId, revision) => store.children(scanId, nodeId, revision))
+  ipcMain.handle('search', (_event, scanId, query) => store.search(scanId, query))
   ipcMain.handle('diffChildren', (_event, from, to, nodeId, revision) => store.diffChildren(from, to, nodeId, revision))
   ipcMain.handle('compare', (_event, from, to, revision) => store.compare(from, to, revision))
   ipcMain.handle('nodePath', (_event, nodeId) => store.nodePath(nodeId))

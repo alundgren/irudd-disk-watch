@@ -754,3 +754,97 @@ test('version five history gains unknown per-entry read error counts', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('search returns top-most name matches by literal, ASCII case-insensitive substring', () => {
+  const f = fixture()
+  const now = Date.now()
+  const find = (nameContains: string) =>
+    f.store.search(f.after, { nameContains, now }).rows.map((row) => [row.path, row.size, row.depth])
+  expect(find('CACHE')).toEqual([['C:\\Footage\\Cache', 200, 2]])
+  expect(find('o')).toEqual([['C:\\Footage', 230, 1]])
+  expect(find('.bin')).toEqual([
+    ['C:\\Footage\\Cache\\blob.bin', 200, 3],
+    ['C:\\Fresh\\new.bin', 50, 2],
+  ])
+  expect(find('gone')).toEqual([])
+  const percent = f.node(f.disk.rootNode, '100%_done', 'file')
+  const lookalike = f.node(f.disk.rootNode, '100xxdone', 'file')
+  const rest = f.node(f.footage, 'smaller files', 'rest')
+  for (const id of [percent, lookalike, rest])
+    f.store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,1,1)').run(f.after, id)
+  expect(find('%_')).toEqual([['C:\\100%_done', 1, 1]])
+  expect(find('0_')).toEqual([])
+  expect(find('smaller')).toEqual([])
+  expect(f.store.search(f.after, { now })).toEqual({ rows: [], total: 0 })
+  expect(f.store.search(f.after, { nameContains: '', now })).toEqual({ rows: [], total: 0 })
+  f.store.db.close()
+})
+
+test('search by age uses the given clock, folder write times and never matches unknown times', () => {
+  const f = fixture()
+  const day = 86_400_000
+  const written = (id: number, days: number | null) =>
+    f.store.db
+      .prepare('UPDATE entry SET last_written_at=?, created_at=1 WHERE scan_id=? AND node_id=?')
+      .run(days === null ? null : days * day, f.after, id)
+  written(f.footage, 8)
+  written(f.cache, 2)
+  written(f.blob, 2)
+  written(f.movie, 8)
+  written(f.empty, null)
+  written(f.fresh, 9)
+  written(f.freshFile, 9)
+  const now = 10 * day
+  const older = (olderThanDays: number, nameContains?: string) =>
+    f.store.search(f.after, { olderThanDays, nameContains, now }).rows.map((row) => row.name)
+  expect(older(5)).toEqual(['Cache'])
+  expect(older(1.5)).toEqual(['Footage'])
+  expect(older(0)).toEqual(['Footage', 'Fresh'])
+  expect(older(30)).toEqual([])
+  expect(older(5, 'bin')).toEqual(['blob.bin'])
+  expect(older(1.5, 'movie')).toEqual(['movie.mov'])
+  expect(f.store.search(f.after, { olderThanDays: 5, now }).rows[0]).toMatchObject({
+    nodeId: f.cache,
+    kind: 'dir',
+    files: 1,
+    createdAt: 1,
+    lastWrittenAt: 2 * day,
+  })
+  expect(() => f.store.search(f.after, { olderThanDays: -1, now })).toThrow(/days/)
+  expect(() => f.store.search(f.after, { olderThanDays: Number.NaN, now })).toThrow(/days/)
+  f.store.db.close()
+})
+
+test('search skips hidden paths, subtracts hidden sizes and reports the uncapped total', () => {
+  const f = fixture()
+  const now = Date.now()
+  const { settings } = f.store.changeHides(f.disk.id, { type: 'add', path: 'C:\\Footage\\Cache' })
+  expect(
+    f.store
+      .search(f.after, { nameContains: 'e', now, revision: settings.revision })
+      .rows.map((row) => [row.name, row.size, row.files]),
+  ).toEqual([
+    ['Fresh', 50, 1],
+    ['Footage', 30, 1],
+    ['Empty', 0, 0],
+  ])
+  expect(f.store.search(f.after, { nameContains: 'bin', now }).rows.map((row) => row.name)).toEqual(['new.bin'])
+  expect(() => f.store.search(f.after, { nameContains: 'bin', now, revision: settings.revision - 1 })).toThrow(
+    /hidden paths changed/,
+  )
+  const capped = f.store.search(f.after, { nameContains: 'e', now }, 2)
+  expect(capped.total).toBe(3)
+  expect(capped.rows.map((row) => row.name)).toEqual(['Fresh', 'Footage'])
+  f.store.db.close()
+})
+
+test('search labels Unix paths with the root separator and counts components below the root', () => {
+  const { store, disk } = nativeFixture()
+  const parent = store.internNode(disk.rootNode, 'dir', 'nested', encoded('nested'))
+  const file = store.internNode(parent, 'file', 'Report.log', encoded('Report.log'))
+  const scan = nativeScan(store, disk.id, disk.rootNode, file, 1)
+  expect(store.search(scan, { nameContains: 'report', now: Date.now() }).rows).toMatchObject([
+    { path: '/fixture/nested/Report.log', depth: 2 },
+  ])
+  store.db.close()
+})

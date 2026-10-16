@@ -33,6 +33,7 @@ const api: DiskWatchApi = {
   currentScan: invoke('currentScan'),
   openFullDiskAccessSettings: invoke('openFullDiskAccessSettings'),
   children: invoke('children'),
+  search: invoke('search'),
   diffChildren: invoke('diffChildren'),
   compare: invoke('compare'),
   nodePath: invoke('nodePath'),

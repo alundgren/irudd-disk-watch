@@ -174,6 +174,26 @@ export interface TreeRow {
   lastWrittenAt: number | null
 }
 
+/** Matching rules for Space filters. `now` is the renderer clock the Age column uses. */
+export interface SearchQuery {
+  nameContains?: string
+  olderThanDays?: number
+  now: number
+  revision?: number
+}
+
+export interface SearchRow extends TreeRow {
+  path: string
+  /** Path components below the tracked root. Deletion needs at least two. */
+  depth: number
+}
+
+/** Top-most matches only, largest first. `total` counts every match before the cap. */
+export interface SearchResult {
+  rows: SearchRow[]
+  total: number
+}
+
 export interface Measure {
   size: number
   files: number
@@ -290,6 +310,7 @@ export interface DiskWatchApi {
   openFullDiskAccessSettings(): Promise<void>
   onScanEvent(listener: (event: ScanEvent) => void): () => void
   children(scanId: number, nodeId: number, revision?: number): Promise<TreeRow[]>
+  search(scanId: number, query: SearchQuery): Promise<SearchResult>
   diffChildren(fromScan: number, toScan: number, nodeId: number, revision?: number): Promise<DiffRow[]>
   compare(fromScan: number, toScan: number, revision: number): Promise<Comparison>
   nodePath(nodeId: number): Promise<string>
