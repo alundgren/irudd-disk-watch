@@ -17,6 +17,8 @@ export type ScanLine =
       identity?: NativeIdentity
       size: number
       files: number
+      /** Read errors at or under this directory. Older Unix workers omit it. */
+      errors?: number
       createdAt: number | null
       lastWrittenAt: number | null
     }
@@ -153,6 +155,7 @@ export function decodeFrame(line: string, native = false): WorkerFrame {
       textField(row.name, 'name')
       count(row.size, 'size')
       if (row.t === 'dir') count(row.files, 'files')
+      if (row.t === 'dir' && row.errors !== undefined) count(row.errors, 'directory error count')
       timestamp(row.createdAt)
       timestamp(row.lastWrittenAt)
       if (native) {
@@ -218,7 +221,15 @@ export async function* framedLines(stream: AsyncIterable<Buffer | string>): Asyn
 export class ScanSequence {
   private dirs = new Map<
     number,
-    { size: number; files: number; childrenSize: number; childrenFiles: number; names: Set<string> }
+    {
+      size: number
+      files: number
+      errors?: number
+      childrenSize: number
+      childrenFiles: number
+      childrenErrors: number
+      names: Set<string>
+    }
   >()
   private rootId: number | undefined
   private errors = 0
@@ -249,11 +260,16 @@ export class ScanSequence {
         line.size !== root.size ||
         line.files !== root.files ||
         line.dirs !== this.dirs.size ||
-        line.errors < this.errors
+        line.errors < this.errors ||
+        (root.errors !== undefined && root.errors !== line.errors)
       )
         throw new Error('Inconsistent scan completion totals.')
       for (const dir of this.dirs.values())
-        if (dir.childrenSize !== dir.size || dir.childrenFiles !== dir.files)
+        if (
+          dir.childrenSize !== dir.size ||
+          dir.childrenFiles !== dir.files ||
+          (dir.errors !== undefined && dir.childrenErrors > dir.errors)
+        )
           throw new Error('Inconsistent directory totals.')
       this.done = true
       return
@@ -270,14 +286,22 @@ export class ScanSequence {
       parent.names.add(key)
       parent.childrenSize = count(parent.childrenSize + line.size, 'directory byte total')
       parent.childrenFiles = count(parent.childrenFiles + (line.t === 'file' ? 1 : line.files), 'directory file total')
+      if (line.t === 'dir') {
+        // Either every directory reports its error count or none does.
+        if ((line.errors === undefined) !== (parent.errors === undefined))
+          throw new Error('Worker sent directory error counts for only part of the tree.')
+        parent.childrenErrors = count(parent.childrenErrors + (line.errors ?? 0), 'directory error total')
+      }
     }
     if (line.t === 'dir') {
       if (this.dirs.has(line.id)) throw new Error('Worker repeated a directory ID.')
       this.dirs.set(line.id, {
         size: line.size,
         files: line.files,
+        errors: line.errors,
         childrenSize: 0,
         childrenFiles: 0,
+        childrenErrors: 0,
         names: new Set(),
       })
     }

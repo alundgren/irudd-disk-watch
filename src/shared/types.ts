@@ -214,6 +214,8 @@ export interface StagedDelete {
   kind: Exclude<NodeKind, 'rest'>
   size: number
   files: number
+  /** Staged from a scan with unreadable items elsewhere under the root. */
+  partialScan?: boolean
 }
 
 export interface LockProcess {

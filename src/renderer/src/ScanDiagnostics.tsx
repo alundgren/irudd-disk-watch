@@ -52,7 +52,7 @@ export function ScanDiagnostics({
                   ? 'No accessible file data was captured. This partial scan does not show that the drive is empty.'
                   : 'This scan has partial coverage. Captured sizes may be incomplete.'}{' '}
                 {unix
-                  ? 'Changes and cleanup require a scan with complete coverage.'
+                  ? 'Changes requires a scan with complete coverage. Cleanup is limited to items with nothing unreadable inside them.'
                   : 'Changes requires a scan with complete coverage.'}
               </>
             ) : (

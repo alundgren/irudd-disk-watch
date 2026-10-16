@@ -1,5 +1,5 @@
 import { containsPath, pathKey } from '../../shared/paths'
-import type { StagedDelete } from '../../shared/types'
+import type { ScanSummary, StagedDelete } from '../../shared/types'
 
 export function sameTarget(a: StagedDelete, b: StagedDelete) {
   return a.components && b.components
@@ -20,5 +20,18 @@ export function summarizeStaged(items: StagedDelete[]) {
     top,
     size: top.reduce((sum, item) => sum + item.size, 0),
     files: top.reduce((sum, item) => sum + item.files, 0),
+    partial: top.some((item) => item.partialScan),
   }
+}
+/**
+ * Start time of the newest finished scan of a Unix root. Deletions created before it no
+ * longer block staging. Partial scans count too: a root such as `/` always has unreadable
+ * items, and the native worker checks every target identity again before deleting.
+ */
+export function verifiedScanTime(scans: ScanSummary[]) {
+  // Same choice as the main process: the finished Unix scan with the highest ID.
+  const latest = scans
+    .filter((scan) => scan.status === 'complete')
+    .reduce<ScanSummary | null>((best, scan) => (!best || scan.id > best.id ? scan : best), null)
+  return latest?.startedAt ?? 0
 }
