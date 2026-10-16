@@ -558,41 +558,54 @@ try {
       ._invokeHandlers
     const state = globalThis as unknown as {
       hideLookups: number
-      hideDelays: number[]
-      diskDelays: number[]
-      excludeDelays: number[]
       excludeLookups: number
+      heldRequests: Record<string, Promise<void>[]>
+      releaseRequests: Record<string, () => void>
     }
     state.hideLookups = 0
     state.excludeLookups = 0
-    state.excludeDelays = []
-    state.hideDelays = [350]
-    state.diskDelays = [900]
+    state.heldRequests = {}
+    state.releaseRequests = {}
     for (const channel of ['nodeLocation', 'openDisk', 'addExcludeNode']) {
       const original = handlers.get(channel)!
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, async (...args: unknown[]) => {
         if (channel === 'nodeLocation') ++state.hideLookups
         if (channel === 'addExcludeNode') ++state.excludeLookups
-        const delay = (
-          channel === 'nodeLocation'
-            ? state.hideDelays
-            : channel === 'addExcludeNode'
-              ? state.excludeDelays
-              : state.diskDelays
-        ).shift()
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+        const held = state.heldRequests[channel]?.shift()
+        if (held) await held
         return original(...args)
       })
     }
   })
+  const holdRequest = async (channel: string) =>
+    app.evaluate((_electron, channel) => {
+      const state = globalThis as unknown as {
+        heldRequests: Record<string, Promise<void>[]>
+        releaseRequests: Record<string, () => void>
+      }
+      const held = new Promise<void>((resolve) => {
+        state.releaseRequests[channel] = resolve
+      })
+      ;(state.heldRequests[channel] ??= []).push(held)
+    }, channel)
+  const releaseRequest = async (channel: string) =>
+    app.evaluate((_electron, channel) => {
+      const state = globalThis as unknown as { releaseRequests: Record<string, () => void> }
+      state.releaseRequests[channel]()
+      delete state.releaseRequests[channel]
+    }, channel)
+  await holdRequest('nodeLocation')
+  await holdRequest('openDisk')
   await page.getByRole('treeitem', { name: /A001\.mov/ }).click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Hide…' }).click()
   assert.equal(await app.evaluate(() => (globalThis as unknown as { hideLookups: number }).hideLookups), 1)
   await diskButton(root).click()
   await page.getByText('Loading view').waitFor()
+  await releaseRequest('nodeLocation')
   await page.waitForTimeout(500)
   assert.equal(await page.getByRole('dialog').count(), 0, 'stale lookup is discarded while another disk is pending')
+  await releaseRequest('openDisk')
   await page.locator('.disk-header h2').getByText(root, { exact: true }).waitFor()
   assert.equal(await page.getByRole('dialog').count(), 0, 'stale lookup cannot leave a dialog on the new disk')
   const parentSnapshot = await page.evaluate(() => window.diskWatch.listDisks())
@@ -610,12 +623,11 @@ try {
   // A completed old lookup must also leave a newer context action intact.
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day1/ }).click()
-  await app.evaluate(() => {
-    ;(globalThis as unknown as { hideDelays: number[] }).hideDelays = [350]
-  })
+  await holdRequest('nodeLocation')
   await page.getByRole('treeitem', { name: /A001\.mov/ }).click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Hide…' }).click()
   await page.getByRole('treeitem', { name: /A002\.mov/ }).click({ button: 'right' })
+  await releaseRequest('nodeLocation')
   await page.waitForTimeout(450)
   assert.equal(await page.getByRole('dialog').count(), 0, 'new context action supersedes old path lookup')
   await page.getByRole('menuitem', { name: 'Hide…' }).click()
@@ -748,16 +760,18 @@ try {
   await page.getByRole('tab', { name: 'Space' }).click()
   await page.getByRole('treeitem', { name: /day1/ }).waitFor()
   await app.evaluate(() => {
-    const state = globalThis as unknown as { excludeDelays: number[]; excludeLookups: number; diskDelays: number[] }
-    state.excludeLookups = 0
-    state.excludeDelays = [350]
-    state.diskDelays = [900]
+    ;(globalThis as unknown as { excludeLookups: number }).excludeLookups = 0
   })
+  await holdRequest('addExcludeNode')
+  await holdRequest('openDisk')
   const nestedDayRow = page.getByRole('treeitem', { name: /day1/ })
   await nestedDayRow.click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
   await diskButton(root).click()
+  await page.getByText('Loading view').waitFor()
+  await releaseRequest('addExcludeNode')
   await page.getByText(`${join(nestedRoot, 'day1')} is excluded.`).waitFor()
+  await releaseRequest('openDisk')
   assert.equal(
     await app.evaluate(() => (globalThis as unknown as { excludeLookups: number }).excludeLookups),
     1,
