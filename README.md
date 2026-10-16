@@ -1,6 +1,6 @@
 # Disk Watch
 
-A Windows desktop app that shows where your disk space went, and what changed since the last time you looked.
+A desktop app for Windows and Mac that shows where your disk space went, and what changed since the last time you looked.
 
 You choose which drives or folders to track. One click scans all of them. Nothing runs in the background, so the app costs nothing while you work. Every scan is kept, so you can browse any earlier scan as a full tree. You can also compare any two scans to see which folders grew, which are new, and which are gone.
 
@@ -29,7 +29,7 @@ The install script also accepts an absolute `-InstallDirectory`. `vp run verify:
 
 To run from source:
 
-Install [Vite+](https://viteplus.dev/guide/global-cli) and a Rust toolchain with the MSVC target. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
+Install [Vite+](https://viteplus.dev/guide/global-cli) and Rust. Windows builds need the MSVC toolchain. Mac builds use the native ARM64 Rust toolchain and Xcode command-line tools. Vite+ downloads and selects the project's pinned Node 24.21.0 and pnpm 12.6.0 from `package.json`; neither needs a separate installation. The project uses Vite+ 1.1.0.
 
 `vp install --frozen-lockfile` installs the committed pnpm lockfile and downloads the Electron development runtime through the project's postinstall hook. The scanner build uses Cargo from PATH, or from `CARGO_HOME/bin` or the standard user `.cargo/bin` installation when PATH has not refreshed.
 
@@ -38,7 +38,53 @@ vp install --frozen-lockfile
 vp run app
 ```
 
-`vp run app` builds the scanner and the app, then starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `vp run dev` starts it that way with hot reload. Data is stored in `%APPDATA%\disk-watch\disk-watch.db`.
+On Windows, `vp run app` builds and starts the app as administrator after a UAC prompt. As administrator, scans read the NTFS master file table, which is the fast path. Without administrator rights the app still works, but it lists folders one by one. `vp run dev` starts it that way with hot reload.
+
+On Mac, `vp run app` builds and starts Electron normally. Native scans use the Mac account's existing filesystem permissions. Choose a detected drive in the app, enter a custom folder path, or use Track over SSH for a Linux worker. On a modern Mac, choose the recommended Data volume for applications and user files. The system root `/` is a separate read-only volume and does not include Data in its scan. Forward a separate profile directory when needed, for example `vp run app -- --user-data-dir=/absolute/profile-directory`. The Windows UAC launch retains those arguments too.
+
+For local APFS roots, **Quick scan (experimental)** reuses unchanged folders using macOS change notifications. Its first run builds a full baseline. Repeat scans can be faster on large roots with few changes; small roots can take longer because collecting events and maintaining the cache adds work. **Scan all drives** always performs the normal scan. Quick scans automatically refresh the full baseline after ten incremental runs or 24 hours, and fall back when the cache, root, scan rules, or event history cannot be trusted. Other operating systems and SSH roots keep their normal scanning method. Notifications are asynchronous, so use a full scan when you need fresh observations throughout the tree. Saved history remains independent of the disposable native cache.
+
+Build a personal unsigned Mac ARM64 app without launching or installing it:
+
+```sh
+vp run dist:mac
+```
+
+The result is `dist/mac-arm64/Disk Watch.app`. The native `dw-scan` executable is bundled outside the ASAR archive in `Contents/Resources`, and the icon is generated from the existing artwork with the macOS `sips` and `iconutil` tools. This build is not signed or notarized. It does not replace an installed app. The Native workflow builds the app on an ARM64 Mac runner and uploads an archive that retains executable permissions.
+
+Build and reinstall the Mac app at a stable path for Spotlight and Full Disk Access:
+
+```sh
+vp run install:mac
+```
+
+This installs `/Applications/Disk Watch.app`, registers it with Launch Services, and requests Spotlight indexing. It does not launch the app, quit a running app, or modify scan history. Quit the installed copy before reinstalling. The installer stages and checks the new app before replacing the old copy, and restores the old copy if the replacement fails. Grant Full Disk Access to the installed app in System Settings.
+
+To use an existing local code-signing certificate, supply its exact name or fingerprint on the first install:
+
+```sh
+DISK_WATCH_SIGNING_IDENTITY='YOUR_CERTIFICATE_NAME_OR_FINGERPRINT' vp run install:mac
+```
+
+The installer signs the app and bundled scanner, verifies their signatures, and records only the certificate fingerprint in the installed bundle. The private key stays in Keychain. Later `vp run install:mac` commands reuse that certificate. A missing certificate or failed signature leaves the current app installed; the installer never silently falls back to unsigned code. You may need to approve Keychain access for signing. Local signing does not notarize the app or provide Developer ID distribution. Full Disk Access must be granted by the user, and retention across changed builds requires manual verification. Without a selected or previously recorded certificate, the initial install remains unsigned and may require renewed permissions after updates.
+
+To reinstall an existing build, use `vp run install:mac --skip-build`. To choose another Applications folder, use `vp run install:mac --install-directory "$HOME/Applications"`. The destination directory must be writable by your account; do not run the build with sudo. `--source "/absolute/path/Disk Watch.app"` installs a chosen existing build without rebuilding it. Installer checks run without opening an app using `node --test scripts/install-mac.check.mjs`.
+
+For SSH tracking, install a matching native Linux worker at the fixed per-account path `$HOME/.local/share/disk-watch/worker-v1`. Build it on the Linux machine, or use the matching Linux workflow artifact. Existing SSH key authentication and a previously verified host key are required; the app refuses password and host-key prompts. A generic installation on that Linux account is:
+
+```sh
+cargo build --release --locked --manifest-path scanner/Cargo.toml
+install -d -m 700 "$HOME/.local/share/disk-watch"
+install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
+```
+
+Inspect existing destination ownership and preserve an existing worker before replacing it. Then enter an SSH configuration alias or `user@host` and an absolute remote root in Track over SSH. The app uses the fixed worker command, disables forwarding and SSH connection sharing, and records worker/account identity. An alias pointing to a different machine is refused. No remote daemon or Go runtime is needed.
+
+Unix cleanup starts disabled and supports APFS and ext4 only. Enable it only for an owner-controlled root after stopping writers. Native guards reject symlink ancestors, changed object identities and mount crossings, but Unix does not provide an atomic identity-check-and-unlink operation. Concurrent hostile writers are outside the supported cleanup contract. Interrupted deletions are checked by operation ID; they are never automatically repeated. After a reboot, remount, or deliberate root replacement, use Reinspect root in Settings. It preserves saved history, clears staged targets and disables cleanup until you scan again and opt in. Changes refuses snapshots from different root identities. See [native behavior and limitations](scanner/README.md).
+
+The app imports legacy `disk-watch.db` history into a checked, separate `disk-watch-native.db` using a read-only SQLite backup, including committed WAL rows. The legacy file is retained. Older releases continue using the legacy history; histories diverge after downgrade and are not automatically merged. Windows histories viewed on Mac remain historical and cannot become local deletion targets.
+
+Before replacing a Windows build, use the [Windows agent verification guide](docs/windows-verification.md). It includes administrator/MFT checks and same-machine baseline comparisons; successful Mac tests do not establish Windows performance.
 
 Other scripts:
 
@@ -46,8 +92,11 @@ Other scripts:
 - `vp run test:rust` runs the Rust scanner tests.
 - `vp run typecheck` checks TypeScript.
 - `vp run build` builds the scanner and Electron app.
-- `vp run verify` builds the app, drives it with Playwright through two scans, and saves screenshots.
-- `vp run ready` runs tests, typecheck, UI verification, Windows packaging, and packaged verification.
+- `vp run test:renderer` runs the pure renderer tests without Electron.
+- `vp run dist:mac` builds the personal unsigned ARM64 Mac app without launching it.
+- `vp run verify:windows` and its existing `verify` alias build the app, drive it with Playwright through two scans, and save screenshots.
+- `vp run verify:packaged:windows` and its existing `verify:packaged` alias test the Windows executable.
+- `vp run ready` is the Windows release check. It runs tests, typecheck, UI verification, Windows packaging, and packaged verification.
 - `vp run bench D:\` scans a real drive twice into a temp database and prints timings.
 
 Use `vp run build` and `vp run dev` for this Electron app. These scripts run `electron-vite` with Vite 7, the version supported by stable electron-vite. Vite+ uses its own Vite core for the test runner. `vp build` and `vp dev` directly start Vite+'s web tooling, so use the project scripts instead.

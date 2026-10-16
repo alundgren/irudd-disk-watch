@@ -1,7 +1,7 @@
 // Drives the built app end to end against a temp folder and saves screenshots.
 // Usage: vp run verify [screenshot dir]
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron, type Page } from 'playwright-core'
@@ -13,6 +13,8 @@ const shots = process.argv[2] ?? mkdtempSync(join(tmpdir(), 'dw-shots-'))
 const userData = mkdtempSync(join(tmpdir(), 'dw-userdata-'))
 const root = mkdtempSync(join(tmpdir(), 'dw-fixture-'))
 const second = mkdtempSync(join(tmpdir(), 'dw-second-'))
+const chooserRoot = mkdtempSync(join(tmpdir(), 'dw-chooser-'))
+const expectedChooserRoot = realpathSync.native(chooserRoot)
 writeFileSync(join(second, 'render.mp4'), Buffer.alloc(3 * MB))
 
 function write(path: string, bytes: number) {
@@ -28,7 +30,7 @@ write('Downloads/installer.exe', 12 * MB)
 write('Temp/scratch.bin', 30 * MB)
 write('unlisted.txt', 100)
 
-const store = new Store(openDb(join(userData, 'disk-watch.db')))
+const store = new Store(openDb(join(userData, 'disk-watch-native.db')))
 store.setExcludes(store.addDisk(root).id, [join(root, 'Temp')])
 store.addDisk(second)
 store.db.close()
@@ -49,6 +51,42 @@ try {
   )
   page.on('pageerror', (err) => console.error('pageerror', err))
   await page.setViewportSize({ width: 1280, height: 820 })
+
+  // Drive discovery reads only OS mount metadata. Only the owned custom folder is registered.
+  await app.evaluate(({ dialog }) => {
+    const state = globalThis as unknown as { chooserDialogOriginal: typeof dialog.showOpenDialog }
+    state.chooserDialogOriginal = dialog.showOpenDialog
+    dialog.showOpenDialog = (() => {
+      throw new Error('Root setup must use the in-app chooser.')
+    }) as typeof dialog.showOpenDialog
+  })
+  await page.getByRole('button', { name: '+ Track a drive or folder', exact: true }).click()
+  const chooser = page.getByRole('dialog', { name: 'Track a drive or folder', exact: true })
+  await chooser.getByRole('button', { name: 'Refresh drives', exact: true }).waitFor()
+  await chooser.getByRole('button', { name: 'Refresh drives', exact: true }).click()
+  await chooser.getByRole('button', { name: 'Refresh drives', exact: true }).and(page.locator(':enabled')).waitFor()
+  await chooser.getByRole('button', { name: 'Cancel', exact: true }).click()
+  assert.equal((await page.evaluate(() => window.diskWatch.listDisks())).length, 2, 'cancel leaves roots unchanged')
+  await page.getByRole('button', { name: '+ Track a drive or folder', exact: true }).click()
+  await chooser.getByRole('button', { name: 'Track a folder instead', exact: true }).click()
+  await chooser.locator('#volume-folder-path').fill(chooserRoot)
+  await chooser.getByRole('button', { name: 'Track folder', exact: true }).click()
+  await chooser.waitFor({ state: 'hidden' })
+  const addedChoice = await page.evaluate(
+    async (path) => (await window.diskWatch.listDisks()).find((disk) => disk.root.toLowerCase() === path.toLowerCase()),
+    expectedChooserRoot,
+  )
+  assert.ok(addedChoice, 'the custom-folder chooser registers its owned fixture')
+  assert.equal(addedChoice.latestScan, null, 'registration starts no scan')
+  assert.equal(addedChoice.cleanupEnabled, false, 'registration enables no native cleanup')
+  await page.evaluate((id) => window.diskWatch.removeDisk(id), addedChoice.id)
+  await app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = (
+      globalThis as unknown as { chooserDialogOriginal: typeof dialog.showOpenDialog }
+    ).chooserDialogOriginal
+  })
+  // Reload the original two roots before the unchanged scan and deletion checks.
+  await page.reload()
 
   async function scan(page: Page) {
     await page.evaluate(() => {
@@ -114,11 +152,11 @@ try {
   await page.setViewportSize({ width: 1280, height: 820 })
   // Capture Explorer requests without opening a desktop window.
   await app.evaluate(({ ipcMain }) => {
-    const state = globalThis as unknown as { shownPath: string | null }
-    state.shownPath = null
-    ipcMain.removeHandler('showInExplorer')
-    ipcMain.handle('showInExplorer', (event, path: string) => {
-      state.shownPath = path
+    const state = globalThis as unknown as { shownNode: { diskId: number; nodeId: number } | null }
+    state.shownNode = null
+    ipcMain.removeHandler('showNode')
+    ipcMain.handle('showNode', (event, diskId: number, nodeId: number) => {
+      state.shownNode = { diskId, nodeId }
       void event.sender.executeJavaScript('window.fixtureShown = true')
     })
   })
@@ -131,10 +169,10 @@ try {
   await focusFile.press('Shift+F10')
   await page.getByRole('menuitem', { name: 'Show in Explorer' }).click()
   await page.waitForFunction(() => !!(window as unknown as { fixtureShown?: boolean }).fixtureShown)
-  assert.equal(
-    await app.evaluate(() => (globalThis as unknown as { shownPath: string }).shownPath),
-    join(root, 'Footage', 'day1', 'A001.mov'),
-  )
+  const shownNode = await app.evaluate(() => (globalThis as unknown as { shownNode: { nodeId: number } }).shownNode)
+  const revealStore = new Store(openDb(join(userData, 'disk-watch-native.db')))
+  assert.equal(revealStore.nodePath(shownNode.nodeId), join(root, 'Footage', 'day1', 'A001.mov'))
+  revealStore.db.close()
   await focusFile.click({ button: 'right', position: { x: (await focusFile.boundingBox())!.width - 1, y: 1 } })
   const menuBounds = await page.getByRole('menu').boundingBox()
   assert.ok(menuBounds && menuBounds.x + menuBounds.width <= 1280 && menuBounds.y + menuBounds.height <= 820)
@@ -408,7 +446,7 @@ try {
 
   await app.close()
   // Synthetic MFT evidence lives only in this temporary DB; no scan of Q: runs.
-  const metadata = new Store(openDb(join(userData, 'disk-watch.db')))
+  const metadata = new Store(openDb(join(userData, 'disk-watch-native.db')))
   const metaDisk = metadata.addDisk('Q:\\')
   const metaNode = (parent: number, name: string, kind: string) =>
     Number(
@@ -434,7 +472,7 @@ try {
       .run(metaScan, id!, size!, files!)
   metadata.db.close()
   const nestedRoot = join(root, 'Footage')
-  const nestedFixture = new Store(openDb(join(userData, 'disk-watch.db')))
+  const nestedFixture = new Store(openDb(join(userData, 'disk-watch-native.db')))
   const nestedDisk = nestedFixture.addDisk(nestedRoot)
   const nestedDay = Number(
     nestedFixture.db.prepare("INSERT INTO node(parent,name,kind) VALUES(?,'day1','dir')").run(nestedDisk.rootNode)
@@ -518,28 +556,56 @@ try {
   await app.evaluate(({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> })
       ._invokeHandlers
-    const state = globalThis as unknown as { hideLookups: number; hideDelays: number[]; diskDelays: number[] }
+    const state = globalThis as unknown as {
+      hideLookups: number
+      excludeLookups: number
+      heldRequests: Record<string, Promise<void>[]>
+      releaseRequests: Record<string, () => void>
+    }
     state.hideLookups = 0
-    state.hideDelays = [350]
-    state.diskDelays = [900]
-    for (const channel of ['nodePath', 'openDisk']) {
+    state.excludeLookups = 0
+    state.heldRequests = {}
+    state.releaseRequests = {}
+    for (const channel of ['nodeLocation', 'openDisk', 'addExcludeNode']) {
       const original = handlers.get(channel)!
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, async (...args: unknown[]) => {
-        if (channel === 'nodePath') ++state.hideLookups
-        const delay = (channel === 'nodePath' ? state.hideDelays : state.diskDelays).shift()
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+        if (channel === 'nodeLocation') ++state.hideLookups
+        if (channel === 'addExcludeNode') ++state.excludeLookups
+        const held = state.heldRequests[channel]?.shift()
+        if (held) await held
         return original(...args)
       })
     }
   })
+  const holdRequest = async (channel: string) =>
+    app.evaluate((_electron, channel) => {
+      const state = globalThis as unknown as {
+        heldRequests: Record<string, Promise<void>[]>
+        releaseRequests: Record<string, () => void>
+      }
+      const held = new Promise<void>((resolve) => {
+        state.releaseRequests[channel] = resolve
+      })
+      ;(state.heldRequests[channel] ??= []).push(held)
+    }, channel)
+  const releaseRequest = async (channel: string) =>
+    app.evaluate((_electron, channel) => {
+      const state = globalThis as unknown as { releaseRequests: Record<string, () => void> }
+      state.releaseRequests[channel]()
+      delete state.releaseRequests[channel]
+    }, channel)
+  await holdRequest('nodeLocation')
+  await holdRequest('openDisk')
   await page.getByRole('treeitem', { name: /A001\.mov/ }).click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Hide…' }).click()
   assert.equal(await app.evaluate(() => (globalThis as unknown as { hideLookups: number }).hideLookups), 1)
   await diskButton(root).click()
   await page.getByText('Loading view').waitFor()
+  await releaseRequest('nodeLocation')
   await page.waitForTimeout(500)
   assert.equal(await page.getByRole('dialog').count(), 0, 'stale lookup is discarded while another disk is pending')
+  await releaseRequest('openDisk')
   await page.locator('.disk-header h2').getByText(root, { exact: true }).waitFor()
   assert.equal(await page.getByRole('dialog').count(), 0, 'stale lookup cannot leave a dialog on the new disk')
   const parentSnapshot = await page.evaluate(() => window.diskWatch.listDisks())
@@ -557,12 +623,11 @@ try {
   // A completed old lookup must also leave a newer context action intact.
   await page.getByRole('treeitem', { name: /Footage/ }).click()
   await page.getByRole('treeitem', { name: /day1/ }).click()
-  await app.evaluate(() => {
-    ;(globalThis as unknown as { hideDelays: number[] }).hideDelays = [350]
-  })
+  await holdRequest('nodeLocation')
   await page.getByRole('treeitem', { name: /A001\.mov/ }).click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Hide…' }).click()
   await page.getByRole('treeitem', { name: /A002\.mov/ }).click({ button: 'right' })
+  await releaseRequest('nodeLocation')
   await page.waitForTimeout(450)
   assert.equal(await page.getByRole('dialog').count(), 0, 'new context action supersedes old path lookup')
   await page.getByRole('menuitem', { name: 'Hide…' }).click()
@@ -695,15 +760,23 @@ try {
   await page.getByRole('tab', { name: 'Space' }).click()
   await page.getByRole('treeitem', { name: /day1/ }).waitFor()
   await app.evaluate(() => {
-    const state = globalThis as unknown as { hideDelays: number[]; diskDelays: number[] }
-    state.hideDelays = [350]
-    state.diskDelays = [900]
+    ;(globalThis as unknown as { excludeLookups: number }).excludeLookups = 0
   })
+  await holdRequest('addExcludeNode')
+  await holdRequest('openDisk')
   const nestedDayRow = page.getByRole('treeitem', { name: /day1/ })
   await nestedDayRow.click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Exclude', exact: true }).click()
   await diskButton(root).click()
+  await page.getByText('Loading view').waitFor()
+  await releaseRequest('addExcludeNode')
   await page.getByText(`${join(nestedRoot, 'day1')} is excluded.`).waitFor()
+  await releaseRequest('openDisk')
+  assert.equal(
+    await app.evaluate(() => (globalThis as unknown as { excludeLookups: number }).excludeLookups),
+    1,
+    'the delayed exclusion used its actual node IPC',
+  )
   const excludedSnapshots = await page.evaluate(
     (ids) => Promise.all(ids.map((id) => window.diskWatch.openDisk(id))),
     [nestedDisk.id, parentDiskId],
@@ -805,19 +878,17 @@ try {
     ipcMain.removeHandler('executeDelete')
     ipcMain.handle('executeDelete', async (...args: unknown[]) => {
       const operation = Promise.resolve(original(...args))
-      let scanBlocked = false
-      try {
-        handlers.get('startScan')!({})
-      } catch (error) {
-        scanBlocked = String(error).includes('deletion')
-      }
-      const concurrentBlocked = Promise.resolve(original(...args)).then(
-        () => false,
-        (error) => String(error).includes('already running'),
-      )
+      const blockedByActiveOperation = (error: unknown) =>
+        String(error).includes('Wait for the current filesystem operation to finish.')
+      const scanBlocked = Promise.resolve()
+        .then(() => handlers.get('startScan')!({}))
+        .then(() => false, blockedByActiveOperation)
+      const concurrentBlocked = Promise.resolve()
+        .then(() => original(...args))
+        .then(() => false, blockedByActiveOperation)
       const result = await operation
       ;(globalThis as unknown as { deleteLocks: { scan: boolean; concurrent: boolean } }).deleteLocks = {
-        scan: scanBlocked,
+        scan: await scanBlocked,
         concurrent: await concurrentBlocked,
       }
       await new Promise((resolve) => setTimeout(resolve, 400))
@@ -1025,5 +1096,6 @@ try {
   await app.close()
   rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   rmSync(second, { recursive: true, force: true })
+  rmSync(chooserRoot, { recursive: true, force: true })
   rmSync(userData, { recursive: true, force: true })
 }

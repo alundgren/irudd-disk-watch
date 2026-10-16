@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
-import { containsPath, pathKey } from '../../shared/paths'
 import type {
   Comparison,
   DeleteResult,
+  DeleteOperation,
   Disk,
   DiskSnapshot,
   HideChange,
@@ -13,13 +13,15 @@ import type {
   TreeRow,
   ViewTotal,
 } from '../../shared/types'
-import { api, formatBytes, formatCount, formatWhen } from './api'
+import { api, formatBytes, formatCount, formatWhen, isWindows, isHistorical, canCleanup, machineLabel } from './api'
 import { ChangesView } from './ChangesView'
 import { DeleteFailureDialog } from './DeleteFailureDialog'
 import { HideDialog } from './HideDialog'
 import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
+import { VolumeChooser } from './VolumeChooser'
+import { sameTarget, containsTarget, summarizeStaged } from './deleteQueue'
 
 type Tab = 'space' | 'treemap' | 'changes' | 'settings'
 interface Intent {
@@ -54,25 +56,18 @@ interface HideOwner {
 interface ContextTarget {
   nodeId: number
   path?: string
+  components?: string[]
   kind?: Exclude<NodeKind, 'rest'>
   size?: number
   files?: number
   canDelete?: boolean
 }
 
-function summarizeStaged(items: StagedDelete[]) {
-  const top = items.filter(
-    (item) => !items.some((other) => pathKey(other.path) !== pathKey(item.path) && containsPath(other.path, item.path)),
-  )
-  return {
-    items,
-    top,
-    size: top.reduce((sum, item) => sum + item.size, 0),
-    files: top.reduce((sum, item) => sum + item.files, 0),
-  }
-}
-
 export function App() {
+  const [chooser, setChooser] = useState<{ source: 'local' | 'ssh'; destination?: string } | null>(null)
+  const [verifiedScans, setVerifiedScans] = useState<Record<number, number>>({})
+  const [operations, setOperations] = useState<Record<number, DeleteOperation[]>>({})
+  const [recovering, setRecovering] = useState<string | null>(null)
   const [disks, setDisks] = useState<Disk[]>([])
   const [page, setPage] = useState<Page | null>(null)
   const [navigation, setNavigation] = useState<Navigation>({ status: 'ready' })
@@ -94,7 +89,13 @@ export function App() {
     origin: HTMLElement
   } | null>(null)
   const menuElement = useRef<HTMLDivElement>(null)
-  const [dialog, setDialog] = useState<{ owner: HideOwner; path: string; original?: string } | null>(null)
+  const [dialog, setDialog] = useState<{
+    owner: HideOwner
+    path: string
+    components?: string[]
+    original?: string
+    originalComponents?: string[]
+  } | null>(null)
   const request = useRef(0)
   const hideAction = useRef(0)
   const intent = useRef<Intent | null>(null)
@@ -114,6 +115,21 @@ export function App() {
       const snapshot = await api.openDisk(next.diskId)
       if (identity !== request.current) return
       const scans = snapshot.scans.filter((scan) => scan.status === 'complete')
+      if (!isWindows(snapshot.disk)) {
+        const pending = await api.deleteOperations(next.diskId)
+        if (identity !== request.current) return
+        setOperations((current) => ({
+          ...current,
+          [next.diskId]: pending.filter((operation) => operation.state !== 'completed'),
+        }))
+        setVerifiedScans((current) => ({
+          ...current,
+          [next.diskId]: Math.max(
+            0,
+            ...scans.filter((scan) => scan.coverage !== 'partial').map((scan) => scan.startedAt),
+          ),
+        }))
+      }
       const revision = snapshot.disk.hides.revision
       let prepared: Page
       if (next.tab === 'settings') prepared = { ...snapshot, tab: 'settings' }
@@ -125,9 +141,10 @@ export function App() {
         prepared = { ...snapshot, tab: next.tab, scanId: scan?.id ?? null, rows, total }
       } else {
         let comparison: Comparison | null = null
-        if (scans.length >= 2) {
-          const a = scans.find((scan) => scan.id === next.fromId) ?? scans[1]!
-          const b = scans.find((scan) => scan.id === next.toId) ?? scans[0]!
+        const comparable = scans.filter((scan) => scan.coverage !== 'partial')
+        if (comparable.length >= 2) {
+          const a = comparable.find((scan) => scan.id === next.fromId) ?? comparable[1]!
+          const b = comparable.find((scan) => scan.id === next.toId) ?? comparable[0]!
           const [from, to] = [a, b].sort((x, y) => x.startedAt - y.startedAt) as [typeof a, typeof b]
           comparison = await api.compare(from.id, to.id, revision)
           if (
@@ -182,7 +199,7 @@ export function App() {
   useEffect(() => {
     void refresh()
     api.currentScan().then(setProgress).catch(report)
-    api.isElevated().then(setElevated).catch(report)
+    if (navigator.platform.startsWith('Win')) api.isElevated().then(setElevated).catch(report)
     return api.onScanEvent((event) => {
       if (event.type === 'progress') {
         setProgress(event.progress)
@@ -217,30 +234,26 @@ export function App() {
     menuElement.current.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - box.height - 8))}px`
   }, [menu])
 
-  const addDisk = async () => {
-    try {
-      const added = await api.pickAndAddDisk()
-      if (!added) return
-      setDisks(await api.listDisks())
-      await navigate({ diskId: added.id, tab: 'space' })
-    } catch (error) {
-      report(error)
-    }
-  }
+  const addDisk = () => setChooser({ source: 'local' })
+
   const cancelStaging = (diskId: number) => {
     for (const key of staging.current.keys()) if (key.startsWith(`${diskId}:`)) staging.current.delete(key)
   }
-  const exclude = async (diskId: number, path: string) => {
+  const exclude = async (diskId: number, nodeId: number) => {
     try {
-      await api.addExclude(diskId, path)
+      const path = await api.addExcludeNode(diskId, nodeId)
       await refresh()
       setNotice({ text: `${path} is excluded.` })
     } catch (error) {
       report(error)
     }
   }
+  const needsRecovery = (diskId: number) =>
+    operations[diskId] === undefined ||
+    operations[diskId]!.some((operation) => operation.createdAt >= (verifiedScans[diskId] ?? 0))
   const toggleDelete = async (diskId: number, item: { nodeId: number }) => {
-    if (deletingRef.current) return
+    const owner = disks.find((disk) => disk.id === diskId)
+    if (deletingRef.current || !owner || !canCleanup(owner) || (!isWindows(owner) && needsRecovery(diskId))) return
     const key = `${diskId}:${item.nodeId}`
     if (staging.current.has(key)) {
       staging.current.delete(key)
@@ -261,7 +274,7 @@ export function App() {
       if (staging.current.get(key) !== action || deletingRef.current) return
       setStagedByDisk((current) => {
         const list = current[diskId] ?? []
-        if (list.some((entry) => pathKey(entry.path) === pathKey(target.path))) return current
+        if (list.some((entry) => sameTarget(entry, target))) return current
         return { ...current, [diskId]: [...list, target] }
       })
     } catch (error) {
@@ -270,11 +283,11 @@ export function App() {
       if (staging.current.get(key) === action) staging.current.delete(key)
     }
   }
-  const removeStaged = (diskId: number, targetPath: string) => {
+  const removeStaged = (diskId: number, target: StagedDelete) => {
     cancelStaging(diskId)
     setStagedByDisk((current) => ({
       ...current,
-      [diskId]: (current[diskId] ?? []).filter((entry) => !containsPath(targetPath, entry.path)),
+      [diskId]: (current[diskId] ?? []).filter((entry) => !containsTarget(target, entry)),
     }))
   }
   const clearStaged = (diskId: number) => {
@@ -284,19 +297,37 @@ export function App() {
   }
   const runStagedDelete = async (diskId: number) => {
     const items = stagedByDisk[diskId] ?? []
-    if (!items.length || deletingRef.current || progress) return
+    const owner = disks.find((disk) => disk.id === diskId)
+    if (
+      !items.length ||
+      deletingRef.current ||
+      progress ||
+      !owner ||
+      !canCleanup(owner) ||
+      (!isWindows(owner) && needsRecovery(diskId))
+    )
+      return
     const summary = summarizeStaged(items)
     deletingRef.current = true
     staging.current.clear()
     setDeletingDisk(diskId)
+    if (!isWindows(owner))
+      setOperations((current) => {
+        const next = { ...current }
+        delete next[diskId]
+        return next
+      })
     try {
       const result = await api.executeDelete(diskId, summary.top)
-      const deletedKeys = new Set(result.deleted.map(pathKey))
+      if (result.state && result.state !== 'completed') {
+        await refresh()
+        setNotice({ text: 'Deletion status is uncertain. Check status, then scan again and restage unresolved items.' })
+        return
+      }
+      const removed = summary.top.filter((target) => result.deleted.includes(target.path))
       setStagedByDisk((current) => ({
         ...current,
-        [diskId]: (current[diskId] ?? []).filter(
-          (item) => ![...deletedKeys].some((delKey) => containsPath(delKey, item.path)),
-        ),
+        [diskId]: (current[diskId] ?? []).filter((item) => !removed.some((target) => containsTarget(target, item))),
       }))
       await refresh()
       if (result.failed.length > 0) {
@@ -312,6 +343,7 @@ export function App() {
         })
       }
     } catch (error) {
+      await refresh()
       report(error)
     } finally {
       deletingRef.current = false
@@ -378,8 +410,7 @@ export function App() {
     dismissMenu()
     if (!ownsHide(owner) || request.current !== owner.request) return
     try {
-      const path = target.path ?? (await api.nodePath(target.nodeId))
-      if (ownsHide(owner) && request.current === owner.request) await api.showInExplorer(path)
+      if (ownsHide(owner) && request.current === owner.request) await api.showNode(owner.diskId, target.nodeId)
     } catch (error) {
       if (ownsHide(owner) && request.current === owner.request) report(error)
     }
@@ -390,8 +421,14 @@ export function App() {
     dismissMenu()
     if (!ownsHide(owner) || request.current !== owner.request) return
     try {
-      const path = target.path ?? (await api.nodePath(target.nodeId))
-      if (ownsHide(owner) && request.current === owner.request) setDialog({ owner, path })
+      const location = await api.nodeLocation(target.nodeId)
+      if (location.diskId !== owner.diskId) throw new Error('This path belongs to another tracked root.')
+      if (ownsHide(owner) && request.current === owner.request)
+        setDialog({
+          owner,
+          path: location.path,
+          components: isWindows(owner.page.disk) ? undefined : location.components,
+        })
     } catch (error) {
       if (ownsHide(owner) && request.current === owner.request) report(error)
     }
@@ -409,14 +446,15 @@ export function App() {
     dismissMenu()
     if (!target.kind || !ownsHide(owner) || request.current !== owner.request) return
     try {
-      const path = target.path ?? (await api.nodePath(target.nodeId))
-      await exclude(owner.diskId, path)
+      await exclude(owner.diskId, target.nodeId)
     } catch (error) {
       if (ownsHide(owner) && request.current === owner.request) report(error)
     }
   }
   const disk = page?.disk
   const staged = disk ? (stagedByDisk[disk.id] ?? []) : []
+  const unresolved = disk && !isWindows(disk) ? (operations[disk.id] ?? []) : []
+  const deletionBlocked = !disk || !canCleanup(disk) || (disk && !isWindows(disk) && needsRecovery(disk.id))
   const stagedSummary = summarizeStaged(staged)
   const staleQueue = staged.some((item) => item.scanId !== disk?.latestScan?.id)
   const complete = page?.scans.filter((scan) => scan.status === 'complete') ?? []
@@ -441,16 +479,22 @@ export function App() {
                 onClick={() => navigate({ diskId: d.id, tab: page?.tab ?? 'space' })}
               >
                 <span className="disk-root">{d.root}</span>
+                <span className="muted small">
+                  {machineLabel(d)}
+                  {isHistorical(d) ? ' · saved history' : ''}
+                </span>
                 {d.capacity && (
                   <span
                     className="capacity"
-                    title={`${formatBytes(d.capacity.free)} free of ${formatBytes(d.capacity.total)}`}
+                    title={`${formatBytes(d.capacity.free)} free of ${formatBytes(d.capacity.total)}${d.nativeRoot ? ` · observed ${formatWhen(d.nativeRoot.observedAt)}, may be stale` : ''}`}
                   >
                     <span style={{ width: `${(1 - d.capacity.free / d.capacity.total) * 100}%` }} />
                   </span>
                 )}
                 <span className="muted small">
-                  {d.capacity ? `${formatBytes(d.capacity.free)} free · ` : ''}
+                  {d.capacity
+                    ? `${formatBytes(d.capacity.free)} free${d.nativeRoot ? ' at last observation' : ''} · `
+                    : ''}
                   {progress?.diskId === d.id
                     ? 'scanning now'
                     : d.latestScan
@@ -463,6 +507,9 @@ export function App() {
         </ul>
         <button className="add-disk" onClick={addDisk}>
           + Track a drive or folder
+        </button>
+        <button className="add-disk" onClick={() => setChooser({ source: 'ssh' })}>
+          Track over SSH
         </button>
       </nav>
       <main>
@@ -501,7 +548,59 @@ export function App() {
           <>
             <header className="disk-header">
               <h2>{page.disk.root}</h2>
+              <span className="muted small">
+                {machineLabel(page.disk)}
+                {isHistorical(page.disk) ? ' · saved history, file actions unavailable' : ''}
+              </span>
             </header>
+            {unresolved.length > 0 && (
+              <section className="delete-summary" aria-label="Deletion status">
+                <p>Files may already have been removed. Check status, then scan again and restage unresolved items.</p>
+                <ul className="plain-list">
+                  {unresolved.map((operation) => (
+                    <li key={operation.operationId}>
+                      <span>
+                        {formatWhen(operation.createdAt)} · {operation.state}
+                      </span>
+                      <button
+                        disabled={recovering !== null || deleting || isHistorical(page.disk)}
+                        onClick={async () => {
+                          setRecovering(operation.operationId)
+                          try {
+                            const result = await api.recoverDelete(operation.operationId)
+                            if (result.failed.length) setDeleteFailure(result)
+                            if (result.state === 'completed')
+                              setStagedByDisk((current) => {
+                                const items = current[page.disk.id] ?? []
+                                const removed = items.filter((item) => result.deleted.includes(item.path))
+                                return {
+                                  ...current,
+                                  [page.disk.id]: items.filter(
+                                    (item) => !removed.some((target) => containsTarget(target, item)),
+                                  ),
+                                }
+                              })
+                            await refresh()
+                            setNotice({
+                              text:
+                                result.state === 'completed'
+                                  ? 'Deletion status checked. Scan again and restage any remaining paths before deleting.'
+                                  : 'Deletion status is unresolved. Scan again and restage remaining paths before deleting.',
+                            })
+                          } catch (error) {
+                            report(error)
+                          } finally {
+                            setRecovering(null)
+                          }
+                        }}
+                      >
+                        {recovering === operation.operationId ? 'Checking…' : 'Check deletion status'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             {staged.length > 0 && (
               <section className="delete-summary" aria-label="Staged deletions">
                 <div className="delete-summary-bar">
@@ -515,7 +614,7 @@ export function App() {
                   </button>
                   <button
                     className="danger"
-                    disabled={deleting || progress !== null || staleQueue}
+                    disabled={deleting || progress !== null || staleQueue || deletionBlocked}
                     onClick={() => void runStagedDelete(page.disk.id)}
                   >
                     {deletingDisk === page.disk.id ? 'Deleting…' : 'Execute delete'}
@@ -531,7 +630,7 @@ export function App() {
                       <li key={item.path}>
                         <span className="path">{item.path}</span>
                         <span className="num muted">{formatBytes(item.size)}</span>
-                        <button disabled={deleting} onClick={() => removeStaged(page.disk.id, item.path)}>
+                        <button disabled={deleting} onClick={() => removeStaged(page.disk.id, item)}>
                           Remove
                         </button>
                       </li>
@@ -560,6 +659,10 @@ export function App() {
                 scans={page.scans}
                 scanning={progress !== null || deleting}
                 onChanged={refresh}
+                onReinspected={() => {
+                  clearStaged(page.disk.id)
+                  void refresh()
+                }}
                 onRemoved={() => {
                   clearStaged(page.disk.id)
                   void refresh()
@@ -577,6 +680,8 @@ export function App() {
                       },
                       path,
                       original: path,
+                      components: page.disk.hides.rules?.find((rule) => rule.path === path)?.components,
+                      originalComponents: page.disk.hides.rules?.find((rule) => rule.path === path)?.components,
                     })
                 }}
                 onError={report}
@@ -593,6 +698,12 @@ export function App() {
                 onPick={(scanId) => navigate({ diskId: page.disk.id, tab: 'space', scanId })}
                 onContext={context}
                 staged={staged}
+                onChooseDrive={() =>
+                  setChooser({
+                    source: page.disk.machine?.kind === 'ssh' ? 'ssh' : 'local',
+                    destination: page.disk.machine?.destination,
+                  })
+                }
               />
             ) : page.tab === 'treemap' ? (
               <TreemapView
@@ -605,13 +716,21 @@ export function App() {
                 onPick={(scanId) => navigate({ diskId: page.disk.id, tab: 'treemap', scanId })}
                 onContext={context}
                 staged={staged}
+                onChooseDrive={() =>
+                  setChooser({
+                    source: page.disk.machine?.kind === 'ssh' ? 'ssh' : 'local',
+                    destination: page.disk.machine?.destination,
+                  })
+                }
               />
             ) : !('comparison' in page) || !page.comparison ? (
-              <p className="empty">Changes compare two scans. Scan again later to see what came and went.</p>
+              <p className="empty">
+                Changes needs two scans with complete coverage. Partial scans remain available in Space and Treemap.
+              </p>
             ) : (
               <ChangesView
                 disk={page.disk}
-                scans={complete}
+                scans={complete.filter((scan) => scan.coverage !== 'partial')}
                 comparison={page.comparison}
                 onPick={(field, scanId) => {
                   const current =
@@ -657,7 +776,11 @@ export function App() {
           }}
         >
           <button role="menuitem" autoFocus onClick={() => void showFromMenu()}>
-            Show in Explorer
+            {isHistorical(menu.owner.page.disk) || menu.owner.page.disk.machine?.kind === 'ssh'
+              ? 'Copy path'
+              : isWindows(menu.owner.page.disk)
+                ? 'Show in Explorer'
+                : 'Show in Finder'}
           </button>
           {menu.target.kind && (
             <button role="menuitem" onClick={openHide}>
@@ -669,27 +792,52 @@ export function App() {
               Exclude
             </button>
           )}
-          {menu.target.canDelete && menu.target.kind && (
-            <button role="menuitem" className="danger-quiet" onClick={queueFromMenu}>
-              {staged.some((item) => item.nodeId === menu.target.nodeId)
-                ? 'Remove from delete queue'
-                : 'Queue for deletion'}
-            </button>
-          )}
+          {menu.target.canDelete &&
+            menu.target.kind &&
+            canCleanup(menu.owner.page.disk) &&
+            (isWindows(menu.owner.page.disk) || !needsRecovery(menu.owner.diskId)) && (
+              <button role="menuitem" className="danger-quiet" onClick={queueFromMenu}>
+                {staged.some((item) => item.nodeId === menu.target.nodeId)
+                  ? 'Remove from delete queue'
+                  : 'Queue for deletion'}
+              </button>
+            )}
         </div>
       )}
+      {chooser && (
+        <VolumeChooser
+          initialSource={chooser.source}
+          initialDestination={chooser.destination}
+          onClose={() => setChooser(null)}
+          onTracked={async (added) => {
+            setDisks(await api.listDisks())
+            await navigate({ diskId: added.id, tab: 'space' })
+          }}
+        />
+      )}
+
       {deleteFailure && <DeleteFailureDialog result={deleteFailure} onClose={() => setDeleteFailure(null)} />}
       {dialog && disk && ownsHide(dialog.owner) && (
         <HideDialog
           key={dialog.owner.action}
           root={dialog.owner.root}
           path={dialog.path}
+          components={dialog.components}
+          unix={!isWindows(dialog.owner.page.disk)}
           editing={!!dialog.original}
-          onSave={(path) => {
+          onSave={(path, components) => {
             if (!ownsHide(dialog.owner)) return Promise.reject(new Error('This view changed. Open Hide again.'))
             return changeHides(
               dialog.owner.diskId,
-              dialog.original ? { type: 'replace', path: dialog.original, replacement: path } : { type: 'add', path },
+              dialog.original
+                ? {
+                    type: 'replace',
+                    path: dialog.original,
+                    components: dialog.originalComponents,
+                    replacement: path,
+                    replacementComponents: components,
+                  }
+                : { type: 'add', path, components },
             )
           }}
           onClose={() => setDialog((current) => (current === dialog ? null : current))}
@@ -734,20 +882,34 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
     <div className="scan-panel">
       <button
         className="primary"
-        disabled={deleting}
+        disabled={deleting || disks.every(isHistorical)}
         onClick={() => api.startScan().catch((err: Error) => onError(err.message))}
       >
         Scan all drives
       </button>
-      {!elevated && (
-        <p className="muted small">
-          Disk Watch is not running as administrator, so scans list folders one by one. That is slower and counts
-          hard-linked files once per link.{' '}
-          <button className="link" onClick={restart}>
-            Restart as administrator
-          </button>
-        </p>
+      {disks.some(
+        (disk) =>
+          disk.machine?.kind === 'local' && disk.machine.os === 'macos' && disk.nativeRoot?.filesystem === 'apfs',
+      ) && (
+        <button
+          disabled={deleting}
+          title="Reuses unchanged Mac folders. The first quick scan builds a baseline; other drives receive a full scan. Use Scan all drives to read every folder again."
+          onClick={() => api.startScan('incremental').catch((err: Error) => onError(err.message))}
+        >
+          Quick scan (experimental)
+        </button>
       )}
+      {!elevated &&
+        navigator.platform.startsWith('Win') &&
+        disks.some((disk) => isWindows(disk) && disk.machine?.kind !== 'ssh' && !isHistorical(disk)) && (
+          <p className="muted small">
+            Disk Watch is not running as administrator, so scans list folders one by one. That is slower and counts
+            hard-linked files once per link.{' '}
+            <button className="link" onClick={restart}>
+              Restart as administrator
+            </button>
+          </p>
+        )}
     </div>
   )
 }

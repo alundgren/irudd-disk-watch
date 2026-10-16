@@ -12,12 +12,14 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, expect, test, vi } from 'vite-plus/test'
+import { afterEach, beforeEach, expect, test as platformTest, vi } from 'vite-plus/test'
 import { executeDelete, runScan } from './scan'
 import { openDb, Store } from './store'
 import { holdFile } from '../../scripts/fixtureLock.ts'
 
 vi.mock('node:child_process', { spy: true })
+
+const test = process.platform === 'win32' ? platformTest : platformTest.skip
 
 const scannerExe = join(import.meta.dirname, '../../scanner/target/release/dw-scan.exe')
 

@@ -1,10 +1,11 @@
 import { useCallback, useState, type MouseEvent } from 'react'
 import type { Disk, NodeKind, ScanSummary, StagedDelete, TreeRow, ViewTotal } from '../../shared/types'
-import { api, formatBytes, formatCount } from './api'
+import { api, formatBytes, formatCount, isWindows } from './api'
 import { LazyTree } from './LazyTree'
 import { NodeAge } from './NodeAge'
 import { NodeIcon } from './NodeIcon'
 import { ScanPicker } from './ScanPicker'
+import { ScanDiagnostics } from './ScanDiagnostics'
 
 interface SpaceViewProps {
   disk: Disk
@@ -13,6 +14,7 @@ interface SpaceViewProps {
   scanId: number
   rows: TreeRow[]
   total: ViewTotal
+  onChooseDrive(): void
   onPick(scanId: number): void
   onContext(
     target: {
@@ -27,7 +29,17 @@ interface SpaceViewProps {
   ): void
 }
 
-export function SpaceView({ disk, scans, scanId, rows, total, onPick, onContext, staged }: SpaceViewProps) {
+export function SpaceView({
+  disk,
+  scans,
+  scanId,
+  rows,
+  total,
+  onPick,
+  onContext,
+  staged,
+  onChooseDrive,
+}: SpaceViewProps) {
   const scan = scans.find((s) => s.id === scanId)!
   const revision = disk.hides.revision
   const stagedIds = new Set(staged.map((item) => item.nodeId))
@@ -52,9 +64,10 @@ export function SpaceView({ disk, scans, scanId, rows, total, onPick, onContext,
         <span className="muted">
           {formatBytes(total.raw.size)} captured · {formatBytes(total.hidden.size)} hidden ·{' '}
           {formatCount(total.visible.files)} visible files
-          {scan.errors > 0 && ` · ${formatCount(scan.errors)} folders could not be read`}
+          {scan.errors > 0 && ` · ${formatCount(scan.errors)} items could not be read`}
         </span>
       </div>
+      <ScanDiagnostics key={scan.id} scan={scan} unix={!isWindows(disk)} onChooseDrive={onChooseDrive} />
       <div className="columns space-columns">
         <span>Name</span>
         <button className="column-sort num" onClick={() => setSort('size')} aria-pressed={sort === 'size'}>
@@ -89,7 +102,13 @@ export function SpaceView({ disk, scans, scanId, rows, total, onPick, onContext,
         load={load}
         rowId={(row) => row.nodeId}
         canExpand={(row) => row.kind === 'dir'}
-        emptyText="Empty folder"
+        emptyText={
+          scan.coverage === 'partial'
+            ? 'No captured entries in this partial scan'
+            : scan.files === 0 && (scan.skipped?.mounts ?? 0) > 0
+              ? 'No files captured within this mount scope'
+              : 'Empty folder'
+        }
         renderRow={(row, siblings) => {
           const parentSize = siblings.reduce((sum, s) => sum + s.size, 0)
           const share = parentSize > 0 ? row.size / parentSize : 0

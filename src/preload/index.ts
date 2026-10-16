@@ -7,8 +7,18 @@ const invoke =
     ipcRenderer.invoke(channel, ...args)
 
 const api: DiskWatchApi = {
+  discoverVolumes: invoke('discoverVolumes'),
+  addVolume: invoke('addVolume'),
+  addFolder: invoke('addFolder'),
+  scanIssues: invoke('scanIssues'),
   listDisks: invoke('listDisks'),
-  pickAndAddDisk: invoke('pickAndAddDisk'),
+  setCleanupEnabled: invoke('setCleanupEnabled'),
+  reinspectRoot: invoke('reinspectRoot'),
+  nodeLocation: invoke('nodeLocation'),
+  addExcludeNode: invoke('addExcludeNode'),
+  showNode: invoke('showNode'),
+  deleteOperations: invoke('deleteOperations'),
+  recoverDelete: invoke('recoverDelete'),
   removeDisk: invoke('removeDisk'),
   pickExclude: invoke('pickExclude'),
   setExcludes: invoke('setExcludes'),
@@ -21,6 +31,7 @@ const api: DiskWatchApi = {
   startScan: invoke('startScan'),
   cancelScan: invoke('cancelScan'),
   currentScan: invoke('currentScan'),
+  openFullDiskAccessSettings: invoke('openFullDiskAccessSettings'),
   children: invoke('children'),
   diffChildren: invoke('diffChildren'),
   compare: invoke('compare'),

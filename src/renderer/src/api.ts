@@ -1,4 +1,4 @@
-import type { DiskWatchApi, ScanSummary } from '../../shared/types'
+import type { Disk, DiskWatchApi, ScanSummary } from '../../shared/types'
 
 declare global {
   interface Window {
@@ -7,6 +7,17 @@ declare global {
 }
 
 export const api = window.diskWatch
+
+export const isWindows = (disk: Disk) => (disk.targetOS ?? disk.machine?.os ?? 'windows') === 'windows'
+export const isHistorical = (disk: Disk) => disk.machine?.kind === 'historical'
+export const canCleanup = (disk: Disk) => !isHistorical(disk) && (isWindows(disk) || disk.cleanupEnabled === true)
+export const machineLabel = (disk: Disk) => disk.machine?.name ?? 'This computer'
+
+/** Labels only. Native file operations use node IDs and encoded components. */
+export function joinDisplayPath(disk: Disk, parent: string, name: string): string {
+  const separator = isWindows(disk) ? '\\' : '/'
+  return `${parent.endsWith(separator) ? parent.slice(0, -1) : parent}${separator}${name}`
+}
 
 const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
@@ -39,5 +50,5 @@ export function formatWhen(time: number): string {
 }
 
 export function describeScan(scan: ScanSummary): string {
-  return `${formatWhen(scan.startedAt)} · ${formatBytes(scan.size)}`
+  return `${formatWhen(scan.startedAt)} · ${formatBytes(scan.size)}${scan.coverage === 'partial' ? ' · partial coverage' : ''}`
 }

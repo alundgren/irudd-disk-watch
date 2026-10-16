@@ -3,6 +3,10 @@ import type { DeleteFailure, DeleteResult, LockProcess } from '../../shared/type
 import { api } from './api'
 
 const unavailable = 'Unavailable'
+const isUnixFailure = (failure: DeleteFailure) =>
+  !!failure.errorDomain && failure.errorDomain !== 'windows' && failure.errorDomain !== 'win32'
+const errorLabel = (failure: DeleteFailure) =>
+  isUnixFailure(failure) ? `${failure.errorDomain} error code` : 'Windows error code'
 
 function processValues(process: LockProcess): [string, string | null][] {
   return [
@@ -15,6 +19,8 @@ function processValues(process: LockProcess): [string, string | null][] {
 }
 
 function lookupMessage(failure: DeleteFailure): string {
+  if (isUnixFailure(failure))
+    return 'Process lookup is unavailable for this native worker. Check the reported filesystem error.'
   switch (failure.lockInfo?.status) {
     case 'found':
       return 'Processes using this path'
@@ -32,6 +38,8 @@ function lookupMessage(failure: DeleteFailure): string {
 export function deletionReport(result: DeleteResult): string {
   const lines = [
     'Disk Watch deletion report',
+    ...(result.machineName ? [`Machine: ${result.machineName}`] : []),
+    ...(result.operationId ? [`Operation: ${result.operationId} · ${result.state ?? 'unknown'}`] : []),
     `Removed ${result.deleted.length} of ${result.deleted.length + result.failed.length} queued paths.`,
     'Deletion can remove some contents of a failed folder. Saved scans remain unchanged.',
   ]
@@ -47,7 +55,7 @@ export function deletionReport(result: DeleteResult): string {
       if (process.note) lines.push(process.note)
     }
     lines.push(`Error: ${failure.message}`)
-    if (failure.errorCode != null) lines.push(`Windows error code: ${failure.errorCode}`)
+    if (failure.errorCode != null) lines.push(`${errorLabel(failure)}: ${failure.errorCode}`)
     lines.push(`Queued path: ${failure.path}`)
     if (failure.lockInfo?.note) lines.push(failure.lockInfo.note)
   }
@@ -77,7 +85,9 @@ export function DeleteFailureDialog({ result, onClose }: { result: DeleteResult;
       setFeedback(`${label} copied.`)
     } catch {
       setCopyError(true)
-      setFeedback('Could not copy. Select the value and press Ctrl+C.')
+      setFeedback(
+        `Could not copy. Select the value and press ${navigator.platform.startsWith('Mac') ? 'Cmd+C' : 'Ctrl+C'}.`,
+      )
     }
   }
   const field = (label: string, value: string | null, mono = true) => (
@@ -104,6 +114,7 @@ export function DeleteFailureDialog({ result, onClose }: { result: DeleteResult;
     >
       <header>
         <h2 id="failure-title">Some paths could not be deleted</h2>
+        {result.machineName && <p className="muted">{result.machineName}</p>}
         <p id="failure-description">
           Removed {result.deleted.length} of {result.deleted.length + result.failed.length} queued paths. Failed paths
           stay queued. A failed folder may have had some contents removed.
@@ -133,7 +144,7 @@ export function DeleteFailureDialog({ result, onClose }: { result: DeleteResult;
             ))}
             <dl className="failure-context">
               {field('Error', failure.message, false)}
-              {failure.errorCode != null && field('Windows error code', String(failure.errorCode))}
+              {failure.errorCode != null && field(errorLabel(failure), String(failure.errorCode))}
               {field('Queued path', failure.path)}
             </dl>
             {failure.lockInfo?.note && <p className="muted small">{failure.lockInfo.note}</p>}
