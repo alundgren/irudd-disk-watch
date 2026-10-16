@@ -21,6 +21,14 @@ export interface WorkerConnection {
 export const LINUX_WORKER_UPDATE =
   'The Linux worker on this machine is out of date, so deletion is unavailable. Update the worker (see "Update the Linux worker" in the README), then try again.'
 
+/**
+ * The worker never received the request, so nothing on disk changed. Callers that record an
+ * operation before sending it can discard that record instead of treating the outcome as unknown.
+ */
+export class WorkerRequestNotSent extends Error {
+  override name = 'WorkerRequestNotSent'
+}
+
 export type WorkerOperation =
   'hello' | 'volumes' | 'inspect' | 'resolve' | 'scan' | 'cleanup' | 'delete' | 'deleteStatus'
 
@@ -100,8 +108,13 @@ export async function* workerFrames(
   // before sending anything that changes files. The check on the real handshake below still
   // covers a worker replaced between the two processes.
   if (machine.os === 'linux' && cleanupMutation(op, parameters)) {
-    const probe = workerInfo(await workerOperation(connection, 'hello', {}, signal))
-    if (!probe.capabilities.linuxPathTrust) throw new Error(LINUX_WORKER_UPDATE)
+    let trusted: boolean | undefined
+    try {
+      trusted = workerInfo(await workerOperation(connection, 'hello', {}, signal)).capabilities.linuxPathTrust
+    } catch (error) {
+      throw new WorkerRequestNotSent(error instanceof Error ? error.message : String(error))
+    }
+    if (!trusted) throw new WorkerRequestNotSent(LINUX_WORKER_UPDATE)
   }
   const command = workerCommand(connection)
   const child = spawn(command.executable, command.args, {

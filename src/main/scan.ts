@@ -11,7 +11,7 @@ import {
   count,
   type ScanLine,
 } from '../shared/workerProtocol.ts'
-import { workerFrames, workerOperation, type WorkerConnection } from './worker.ts'
+import { workerFrames, workerOperation, WorkerRequestNotSent, type WorkerConnection } from './worker.ts'
 import { containsPath, pathKey } from '../shared/paths.ts'
 import type {
   DeleteFailure,
@@ -473,6 +473,11 @@ export async function executeNativeDelete(
     store.updateDeleteOperation(operationId, result.state!, receipt)
     return { ...result, machineName: disk.machine.name }
   } catch (error) {
+    // The worker never saw the request, so there is no outcome to check later.
+    if (error instanceof WorkerRequestNotSent) {
+      store.discardUnsentDeleteOperation(operationId)
+      throw new Error(error.message)
+    }
     store.updateDeleteOperation(operationId, 'unknown')
     throw new Error(
       `Deletion ${operationId} has an uncertain outcome. Check status before any new action. ${error instanceof Error ? error.message : String(error)}`,

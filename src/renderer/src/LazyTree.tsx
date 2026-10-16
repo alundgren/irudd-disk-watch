@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode, type MouseEvent } from 'react'
 import type { NodeKind } from '../../shared/types'
 import { openRowContext } from './rowContext'
+import { errorText } from './bulkQueue'
 
 const PAGE = 200
 
@@ -47,7 +48,7 @@ function Branch<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { no
     let live = true
     load(nodeId).then(
       (loaded) => live && setRows(loaded),
-      (err: Error) => live && setError(err.message),
+      (err: unknown) => live && setError(errorText(err)),
     )
     return () => {
       live = false

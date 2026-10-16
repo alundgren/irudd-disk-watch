@@ -204,7 +204,7 @@ describe('confirm dialog', () => {
     expect(html).toContain('/root/top')
     expect(html).toContain(TOP_LEVEL_REASON)
     expect(html).toContain('2 items already in the queue are inside selected folders')
-    expect(html).toContain('scan this root again before queueing more items')
+    expect(html).toContain('scan again to see current contents before queueing more')
     expect(html).toContain('items inside it that are hidden from views. The size above does not count them')
     expect(html).toContain('Queue 12 items</button>')
   })

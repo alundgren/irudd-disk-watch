@@ -440,7 +440,13 @@ fn platform(control: &Control) -> Result<Discovery> {
                 }
             }
         };
-        let recommended = local && !system && !entry.read_only && entry.filesystem != "tmpfs";
+        // Container layers (such as Docker's overlay mounts) and mounts without a readable capacity are
+        // listed but not suggested, so the root filesystem is the usual recommendation.
+        let recommended = local
+            && !system
+            && !entry.read_only
+            && !matches!(entry.filesystem.as_str(), "tmpfs" | "overlay" | "squashfs")
+            && !bytes.is_null();
         let mut row = unix_row(
             &entry.path,
             &entry.id,

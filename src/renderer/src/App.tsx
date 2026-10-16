@@ -45,6 +45,8 @@ interface Notice {
   text: string
   undo?: () => void
   details?: () => void
+  /** A finished scan of this disk makes the notice out of date, so it is dismissed. */
+  untilScanOf?: number
 }
 
 interface HideOwner {
@@ -107,7 +109,7 @@ export function App() {
   const intent = useRef<Intent | null>(null)
   const activePage = useRef<Page | null>(null)
   activePage.current = page
-  const report = (error: unknown) => setNotice({ text: error instanceof Error ? error.message : String(error) })
+  const report = (error: unknown) => setNotice({ text: errorText(error) })
 
   const navigate = useCallback(async (next: Intent) => {
     // A bulk queue survives reloads of its own view; leaving Space aborts it from the dialog.
@@ -171,7 +173,7 @@ export function App() {
         setNavigation({
           status: 'error',
           intent: next,
-          message: error instanceof Error ? error.message : String(error),
+          message: errorText(error),
         })
     }
   }, [])
@@ -209,6 +211,8 @@ export function App() {
       if (event.type === 'run-finished') setProgress(null)
       if (event.type === 'disk-finished' && event.status === 'failed')
         setNotice({ text: `A scan failed: ${event.message}` })
+      if (event.type === 'disk-finished' && event.status === 'complete')
+        setNotice((current) => (current?.untilScanOf === event.diskId ? null : current))
       void refresh()
     })
   }, [refresh])
@@ -289,6 +293,7 @@ export function App() {
     if (!owner) return 'This root is no longer tracked.'
     if (isHistorical(owner)) return 'Saved history cannot delete files.'
     if (!canCleanup(owner)) return 'Deletion is off for this root. Turn it on in Settings.'
+    if (!isWindows(owner) && operations[diskId] === undefined) return 'Checking earlier deletions…'
     if (!isWindows(owner) && needsRecovery(diskId))
       return 'An earlier deletion needs a status check and a fresh scan first.'
     if (deleting || deletingRef.current) return 'A deletion is running.'
@@ -433,6 +438,7 @@ export function App() {
         if (intent.current?.diskId === diskId) setShowQueue(false)
         setNotice({
           text: `Removed ${result.deleted.length} queued ${result.deleted.length === 1 ? 'path' : 'paths'}. Saved scans remain unchanged. Scan again to capture current disk contents.`,
+          untilScanOf: diskId,
         })
       }
     } catch (error) {
@@ -911,6 +917,16 @@ export function App() {
                 <span className="small">Turn on deletion in Settings</span>
               </button>
             )}
+          {menu.target.canDelete &&
+            menu.target.kind &&
+            canCleanup(menu.owner.page.disk) &&
+            !isWindows(menu.owner.page.disk) &&
+            needsRecovery(menu.owner.diskId) && (
+              <button role="menuitem" aria-disabled="true" className="menu-unavailable">
+                Queue for deletion
+                <span className="small">{queueBlocked(menu.owner.diskId)}</span>
+              </button>
+            )}
         </div>
       )}
       {chooser && (
@@ -965,7 +981,7 @@ interface ScanPanelProps {
 }
 
 function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelProps) {
-  const restart = () => api.restartElevated().catch((err: Error) => onError(err.message))
+  const restart = () => api.restartElevated().catch((err: unknown) => onError(errorText(err)))
   if (progress) {
     const root = disks.find((d) => d.id === progress.diskId)?.root ?? ''
     return (
@@ -992,7 +1008,7 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
       <button
         className="primary"
         disabled={deleting || disks.every(isHistorical)}
-        onClick={() => api.startScan().catch((err: Error) => onError(err.message))}
+        onClick={() => api.startScan().catch((err: unknown) => onError(errorText(err)))}
       >
         Scan all drives
       </button>
@@ -1003,7 +1019,7 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
         <button
           disabled={deleting}
           title="Reuses unchanged Mac folders. The first quick scan builds a baseline; other drives receive a full scan. Use Scan all drives to read every folder again."
-          onClick={() => api.startScan('incremental').catch((err: Error) => onError(err.message))}
+          onClick={() => api.startScan('incremental').catch((err: unknown) => onError(errorText(err)))}
         >
           Quick scan (experimental)
         </button>

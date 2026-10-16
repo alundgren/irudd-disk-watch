@@ -61,7 +61,9 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
             {outcome.queued ? `Queued ${items(outcome.queued)} for deletion` : 'Nothing was queued'}
           </h2>
           {outcome.stopped && <p role="alert">{outcome.stopped}</p>}
-          <p className="muted">Review the queue above the tabs, then use Execute delete when you are ready.</p>
+          {outcome.queued > 0 && (
+            <p className="muted">Review the queue above the tabs, then use Execute delete when you are ready.</p>
+          )}
         </>
       ) : (
         <>
@@ -103,8 +105,8 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
       )}
       {!outcome && plan.queue.length > 0 && (
         <p className="muted small">
-          After the delete runs, scan this root again before queueing more items. Saved scans do not change when files
-          are removed.
+          Saved scans do not change when files are removed. After the delete runs, scan again to see current contents
+          before queueing more.
         </p>
       )}
       <div className="dialog-actions">

@@ -184,7 +184,8 @@ export function SpaceView({
         <span className="muted">
           {formatBytes(total.raw.size)} captured · {formatBytes(total.hidden.size)} hidden ·{' '}
           {formatCount(total.visible.files)} visible files
-          {scan.errors > 0 && ` · ${formatCount(scan.errors)} items could not be read`}
+          {scan.errors > 0 &&
+            ` · ${formatCount(scan.errors)} ${scan.errors === 1 ? 'item' : 'items'} could not be read`}
         </span>
       </div>
       <ScanDiagnostics key={scan.id} scan={scan} unix={!isWindows(disk)} onChooseDrive={onChooseDrive} />
@@ -236,7 +237,7 @@ export function SpaceView({
         </button>
         <div className="column-filter name-filter">
           <input
-            type="search"
+            type="text"
             aria-label="Name contains"
             placeholder="Name contains…"
             value={filters.name}

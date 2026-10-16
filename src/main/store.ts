@@ -1302,6 +1302,14 @@ export class Store {
     return this.getDeleteOperation(operationId)
   }
 
+  /** Removes a record whose request never reached the worker. Sent or finished requests stay. */
+  discardUnsentDeleteOperation(operationId: string): void {
+    const old = this.getDeleteOperation(operationId)
+    if (!['pending', 'running'].includes(old.state) || old.receipt !== undefined)
+      throw new Error('Only an unsent deletion request can be discarded.')
+    this.db.prepare('DELETE FROM delete_operation WHERE operation_id=?').run(operationId)
+  }
+
   getDeleteOperation(operationId: string): DeleteOperation {
     const row = this.db.prepare('SELECT * FROM delete_operation WHERE operation_id=?').get(operationId)
     if (!row) throw new Error(`No deletion operation ${operationId}`)

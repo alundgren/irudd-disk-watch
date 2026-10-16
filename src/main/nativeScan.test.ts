@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, test as platformTest } from 'vite-plus/test'
 import { Store, openDb } from './store'
 import { runScan, executeNativeDelete, recoverNativeDelete } from './scan'
-import { workerOperation, type WorkerConnection } from './worker'
+import { LINUX_WORKER_UPDATE, workerOperation, type WorkerConnection } from './worker'
 import { nativeRoot, workerInfo } from '../shared/workerProtocol'
 import { unixLabel } from '../shared/paths'
 import { selectedVolume, verifyVolume, volumeDiscovery } from './volumes'
@@ -178,6 +178,53 @@ test('native cleanup uses saved identities and durable receipts without changing
     expect(receipt.state).toBe('completed')
     expect(readFileSync(join(f.root, 'deep/large'), 'utf8')).toBe('replacement')
     expect(readFileSync(join(f.outside, 'sentinel'), 'utf8')).toBe('safe')
+  } finally {
+    f.store.db.close()
+  }
+})
+
+test('an out-of-date Linux worker leaves no uncertain deletion behind', async () => {
+  const f = await fixture()
+  try {
+    const scanned = await f.scan()
+    const deep = f.store.children(scanned.scanId, f.disk.rootNode).find((row) => row.name === 'deep')!
+    const leaf = f.store.children(scanned.scanId, deep.nodeId).find((row) => row.name === 'large')!
+    await workerOperation(f.connection, 'cleanup', { root: f.rootInfo, enabled: true })
+    f.store.setCleanupEnabled(f.disk.id, true)
+    const staged = f.store.stageDelete(f.disk.id, leaf.nodeId)
+    // Stands in for a Linux worker built before per-folder trust checks. It answers `hello` only.
+    const oldWorker = join(f.directory, 'old-worker')
+    const received = join(f.directory, 'received')
+    writeFileSync(
+      oldWorker,
+      `#!${process.execPath}
+import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
+const { workerId: id, account } = ${JSON.stringify(f.connection.machine)};
+const worker = { id, account, os: 'linux', version: 1, capabilities: { scan: true, delete: true } };
+createInterface({ input: process.stdin }).once('line', (line) => {
+  const request = JSON.parse(line);
+  appendFileSync(${JSON.stringify(received)}, request.op + '\\n');
+  const send = (record) => process.stdout.write(JSON.stringify(record) + '\\n');
+  send({ t: 'hello', v: 1, requestId: request.requestId, worker });
+  send({ t: 'result', value: worker });
+  process.stdout.end(() => process.exit(0));
+});
+`,
+      { mode: 0o700 },
+    )
+    const old: WorkerConnection = {
+      ...f.connection,
+      machine: { ...f.connection.machine, os: 'linux' },
+      scannerExe: oldWorker,
+    }
+    const failure = executeNativeDelete(f.store, old, f.disk.id, [staged])
+    await expect(failure).rejects.toThrow(LINUX_WORKER_UPDATE)
+    await expect(failure).rejects.not.toThrow(/uncertain/)
+    expect(readFileSync(received, 'utf8')).toBe('hello\n')
+    // Nothing was sent, so nothing needs a status check before the next deletion.
+    expect(f.store.listDeleteOperations(f.disk.id)).toEqual([])
+    expect(readFileSync(join(f.root, 'deep/large'))).toHaveLength(20)
   } finally {
     f.store.db.close()
   }
