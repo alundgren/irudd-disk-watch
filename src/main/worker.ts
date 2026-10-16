@@ -16,6 +16,10 @@ export interface WorkerConnection {
   stateDir?: string
 }
 
+/** Linux workers built before per-folder trust checks refuse most real roots, such as `/`. */
+export const LINUX_WORKER_UPDATE =
+  'The Linux worker on this machine is out of date, so deletion is unavailable. Update the worker (see "Update the Linux worker" in the README), then try again.'
+
 export type WorkerOperation =
   'hello' | 'volumes' | 'inspect' | 'resolve' | 'scan' | 'cleanup' | 'delete' | 'deleteStatus'
 
@@ -142,6 +146,12 @@ export async function* workerFrames(
         if (op === 'scan' && !frame.worker.capabilities.scan) throw new Error('This worker cannot scan.')
         if (op === 'delete' && !frame.worker.capabilities.delete)
           throw new Error('This worker does not support cleanup.')
+        if (
+          frame.worker.os === 'linux' &&
+          !frame.worker.capabilities.linuxPathTrust &&
+          (op === 'delete' || (op === 'cleanup' && parameters.enabled === true))
+        )
+          throw new Error(LINUX_WORKER_UPDATE)
         sawHello = true
         continue
       }

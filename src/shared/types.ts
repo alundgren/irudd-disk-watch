@@ -15,7 +15,8 @@ export interface WorkerInfo {
   account: string
   os: TargetOS
   version: 1
-  capabilities: { scan: boolean; delete: boolean }
+  /** `linuxPathTrust` marks Linux workers with per-folder cleanup trust checks. */
+  capabilities: { scan: boolean; delete: boolean; linuxPathTrust?: boolean }
 }
 
 export interface NativeIdentity {

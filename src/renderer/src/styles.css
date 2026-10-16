@@ -828,6 +828,12 @@ button.link:hover {
   min-width: 200px;
   font-size: 13.5px;
 }
+.context-menu .menu-unavailable {
+  color: var(--muted);
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+}
 
 @media (max-width: 1100px) {
   .app {

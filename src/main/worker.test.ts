@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test as platformTest } from 'vite-plus/test'
-import { sshArguments, workerOperation } from './worker'
+import { LINUX_WORKER_UPDATE, sshArguments, workerOperation } from './worker'
 
 const test = process.platform === 'win32' ? platformTest.skip : platformTest
 const owned: string[] = []
@@ -19,7 +19,7 @@ function connection(mode: string) {
     `#!${process.execPath}
 import { createInterface } from 'node:readline';
 const mode = ${JSON.stringify(mode)};
-const worker = {id:'fixture-worker',account:'fixture-account',os:'linux',version:1,capabilities:{scan:true,delete:true}};
+const worker = {id:'fixture-worker',account:'fixture-account',os:'linux',version:1,capabilities:mode === 'old-linux' ? {scan:true,delete:true} : {scan:true,delete:true,linuxPathTrust:true}};
 createInterface({input:process.stdin}).once('line', (line) => {
  const request = JSON.parse(line);
  const send = (record) => process.stdout.write(JSON.stringify(record)+'\\n');
@@ -57,6 +57,17 @@ test('transport requires a matching handshake, bounded complete frames, one term
     'failed-exit',
   ])
     await expect(workerOperation(connection(mode), 'hello')).rejects.toThrow()
+})
+
+test('a Linux worker without per-folder trust checks asks for an update before cleanup', async () => {
+  await expect(workerOperation(connection('old-linux'), 'cleanup', { enabled: true })).rejects.toThrow(
+    LINUX_WORKER_UPDATE,
+  )
+  await expect(workerOperation(connection('old-linux'), 'delete', {})).rejects.toThrow(LINUX_WORKER_UPDATE)
+  // Turning cleanup off and other operations keep working with the older worker.
+  await expect(workerOperation(connection('old-linux'), 'cleanup', { enabled: false })).resolves.toBeTruthy()
+  await expect(workerOperation(connection('old-linux'), 'inspect')).resolves.toBeTruthy()
+  await expect(workerOperation(connection('valid'), 'cleanup', { enabled: true })).resolves.toBeTruthy()
 })
 
 platformTest('SSH destination cannot supply shell or SSH options and the command is fixed', () => {

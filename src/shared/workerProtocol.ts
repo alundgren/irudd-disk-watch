@@ -125,7 +125,11 @@ export function workerInfo(value: unknown): WorkerInfo {
   )
     throw new Error('Unsupported worker identity or version.')
   const capabilities = object(row.capabilities)
-  if (typeof capabilities.scan !== 'boolean' || typeof capabilities.delete !== 'boolean')
+  if (
+    typeof capabilities.scan !== 'boolean' ||
+    typeof capabilities.delete !== 'boolean' ||
+    !['undefined', 'boolean'].includes(typeof capabilities.linuxPathTrust)
+  )
     throw new Error('Invalid worker capabilities.')
   return row as unknown as WorkerInfo
 }
