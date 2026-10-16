@@ -78,9 +78,18 @@ install -d -m 700 "$HOME/.local/share/disk-watch"
 install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
 ```
 
+To update the Linux worker, for example when the app says it is out of date, rebuild it from an up-to-date checkout of this repository on that Linux account and replace the executable:
+
+```sh
+cargo build --release --locked --manifest-path scanner/Cargo.toml
+install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
+```
+
+The installation ID, cleanup settings and deletion receipts live in the worker's separate state directory, so the app still recognizes the machine after the update. If the old worker refused to turn on deletion, turn it on again in Settings.
+
 Inspect existing destination ownership and preserve an existing worker before replacing it. Then enter an SSH configuration alias or `user@host` and an absolute remote root in Track over SSH. The app uses the fixed worker command, disables forwarding and SSH connection sharing, and records worker/account identity. An alias pointing to a different machine is refused. No remote daemon or Go runtime is needed.
 
-Unix cleanup starts disabled and supports APFS and ext4 only. Enable it only for an owner-controlled root after stopping writers. Native guards reject symlink ancestors, changed object identities and mount crossings, but Unix does not provide an atomic identity-check-and-unlink operation. Concurrent hostile writers are outside the supported cleanup contract. Interrupted deletions are checked by operation ID; they are never automatically repeated. After a reboot, remount, or deliberate root replacement, use Reinspect root in Settings. It preserves saved history, clears staged targets and disables cleanup until you scan again and opt in. Changes refuses snapshots from different root identities. See [native behavior and limitations](scanner/README.md).
+Unix cleanup starts disabled and supports APFS and ext4 only. Enable it only after stopping writers. On a Mac the tracked root must be owned by you and closed to other users. On Linux any folder can be tracked, including `/`. Each folder on the way to a queued item must belong to you or root and must not be changeable by other users (sticky shared folders such as `/tmp` are fine), and queued folders and everything in them must belong to you. While cleanup is off, the context menu shows Queue for deletion as unavailable, with the reason. Native guards reject symlink ancestors, changed object identities and mount crossings, but Unix does not provide an atomic identity-check-and-unlink operation. Concurrent hostile writers are outside the supported cleanup contract. Interrupted deletions are checked by operation ID; they are never automatically repeated. After a reboot, remount, or deliberate root replacement, use Reinspect root in Settings. It preserves saved history, clears staged targets and disables cleanup until you scan again and opt in. Changes refuses snapshots from different root identities. See [native behavior and limitations](scanner/README.md).
 
 The app imports legacy `disk-watch.db` history into a checked, separate `disk-watch-native.db` using a read-only SQLite backup, including committed WAL rows. The legacy file is retained. Older releases continue using the legacy history; histories diverge after downgrade and are not automatically merged. Windows histories viewed on Mac remain historical and cannot become local deletion targets.
 

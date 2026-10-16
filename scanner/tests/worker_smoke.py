@@ -57,7 +57,11 @@ def call(state, op, worker=None, **fields):
             proc.kill()
         proc.wait()
         for stream in (proc.stdin, proc.stdout, proc.stderr):
-            stream.close()
+            try:
+                stream.close()
+            except BrokenPipeError:
+                # A buffered ping can still be pending when a fast worker has already exited.
+                pass
         for thread in readers:
             thread.join(3)
 
@@ -79,7 +83,10 @@ with tempfile.TemporaryDirectory(prefix='disk-watch-protocol-test-') as fixture:
     code, records = call(state, 'hello')
     assert code == 0
     worker = records[-1]['value']
-    assert worker['capabilities'] == {'scan': True, 'delete': True}
+    expected = {'scan': True, 'delete': True}
+    if sys.platform.startswith('linux'):
+        expected['linuxPathTrust'] = True
+    assert worker['capabilities'] == expected
     before = sorted(os.listdir(root))
     code, records = call(state, 'volumes', worker)
     assert code == 0

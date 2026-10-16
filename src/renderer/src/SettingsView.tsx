@@ -129,11 +129,21 @@ export function SettingsView({
       {!isWindows(disk) && !isHistorical(disk) && (
         <section>
           <h2>Permanent cleanup</h2>
-          <p className="muted">
-            Cleanup supports APFS and ext4. Enable only for a writable tree you own, with other programs paused from
-            changing it. Native checks refuse changed roots, mounts and file identities. A concurrent writer can still
-            rename an open folder. Roots needing stronger protection should stay scan-only.
-          </p>
+          {disk.machine?.os === 'linux' ? (
+            <p className="muted">
+              Cleanup works on writable ext4 and never deletes the root or the folders directly inside it. Folders on
+              the way to an item must belong to you or to root, and other people must not be able to change them (shared
+              folders like /tmp are fine). Folders you delete must belong to you. Links are removed, not followed, and
+              cleanup stops at other mounts. Files the system refuses, such as locked or read-only ones, are listed as
+              failures. Pause programs that write to these folders first.
+            </p>
+          ) : (
+            <p className="muted">
+              Cleanup supports APFS and ext4. Enable only for a writable tree you own, with other programs paused from
+              changing it. Native checks refuse changed roots, mounts and file identities. A concurrent writer can still
+              rename an open folder. Roots needing stronger protection should stay scan-only.
+            </p>
+          )}
           <label className="metadata-toggle">
             <input
               type="checkbox"

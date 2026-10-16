@@ -470,8 +470,16 @@ pub fn worker_identity(state: &Path) -> Result<Value> {
         durable(&path, &json!({"id":id}))?;
         id
     };
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
+    let mut capabilities = json!({"scan":true,"delete":true});
+    // Linux cleanup checks each directory's owner, write bits and ACL instead of requiring
+    // an owner-only root. Controllers use this flag to detect workers that predate it.
+    #[cfg(target_os = "linux")]
+    {
+        capabilities["linuxPathTrust"] = json!(true);
+    }
     Ok(
-        json!({"id":id,"account":unsafe { libc::geteuid() }.to_string(),"os":std::env::consts::OS,"version":1,"capabilities":{"scan":true,"delete":true}}),
+        json!({"id":id,"account":unsafe { libc::geteuid() }.to_string(),"os":std::env::consts::OS,"version":1,"capabilities":capabilities}),
     )
 }
 
@@ -1236,11 +1244,13 @@ fn cleanup_filesystem(root: &File, live: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Owner and permission policy for macOS roots and every traversed macOS directory, unchanged
+/// from the original whole-tree rule. Linux uses the per-directory rules in `trusted_dir`.
+#[cfg(target_os = "macos")]
 fn eligible(root: &File, live: &Value) -> Result<()> {
     if unsafe { libc::geteuid() } == 0 || live["path"] == "/" {
         return Err("Cleanup is unavailable for elevated accounts and filesystem roots".into());
     }
-    #[cfg(target_os = "macos")]
     reject_extended_acl(root)?;
     let meta = root.metadata().map_err(NativeError::from)?;
     if meta.uid() != unsafe { libc::geteuid() }
@@ -1251,6 +1261,324 @@ fn eligible(root: &File, live: &Value) -> Result<()> {
         return Err("Cleanup requires an owner-controlled writable root without group or other write permission".into());
     }
     Ok(())
+}
+
+/// Account facts used by the Linux directory trust rules, computed once per request.
+struct Trust {
+    #[cfg(target_os = "linux")]
+    euid: u32,
+    #[cfg(target_os = "linux")]
+    private_gid: Option<u32>,
+}
+impl Trust {
+    fn load() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                euid: unsafe { libc::geteuid() },
+                private_gid: linux_trust::private_group(),
+            }
+        }
+        #[cfg(target_os = "macos")]
+        Self {}
+    }
+}
+
+/// Account and mount checks before cleanup is enabled or run. The root directory itself is
+/// then checked with `trusted_dir` like the target's other ancestors.
+fn root_allowed(root: &File, live: &Value) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    return eligible(root, live);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = root;
+        if unsafe { libc::geteuid() } == 0 {
+            return Err("Cleanup is unavailable when the worker runs as root".into());
+        }
+        let status = fs::read_to_string("/proc/self/status").map_err(NativeError::from)?;
+        if linux_trust::effective_capabilities(&status) != Some(0) {
+            return Err(
+                "Cleanup is unavailable when the worker has elevated Linux capabilities".into(),
+            );
+        }
+        if live["readOnly"] != false {
+            return Err("This filesystem is mounted read-only, so cleanup is unavailable".into());
+        }
+        Ok(())
+    }
+}
+
+/// Whether a directory can be trusted not to be rearranged by someone else while cleanup runs.
+/// `in_tree` is true for the selected folder and everything below it, and false for the root
+/// and the target's other ancestors.
+fn trusted_dir(dir: &File, in_tree: bool, trust: &Trust) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (in_tree, trust);
+        eligible(dir, &json!({"readOnly":false}))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let meta = dir.metadata().map_err(NativeError::from)?;
+        linux_trust::check_mode(meta.uid(), meta.gid(), meta.mode(), in_tree, trust)?;
+        linux_trust::check_acl(dir)
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_trust {
+    use super::{NativeError, Result, Trust};
+    use std::ffi::CStr;
+    use std::fs::{self, File};
+    use std::os::fd::AsRawFd;
+
+    pub(super) fn effective_capabilities(status: &str) -> Option<u64> {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("CapEff:"))
+            .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+    }
+
+    pub(super) fn check_mode(
+        uid: u32,
+        gid: u32,
+        mode: u32,
+        in_tree: bool,
+        trust: &Trust,
+    ) -> Result<()> {
+        let owned = uid == trust.euid;
+        // Ancestors may belong to root (for example /home); folders being deleted must be ours.
+        if !owned && (in_tree || uid != 0) {
+            return Err("Folder is owned by another user, so cleanup will not change it".into());
+        }
+        let sticky = mode & 0o1000 != 0;
+        if mode & 0o002 != 0 && !sticky {
+            return Err("Folder is writable by other users, so cleanup will not change it".into());
+        }
+        if mode & 0o020 != 0 && !sticky && !(owned && trust.private_gid == Some(gid)) {
+            return Err("Folder is writable by a group that other users can belong to, so cleanup will not change it".into());
+        }
+        Ok(())
+    }
+
+    const ACL_USER: u16 = 0x02;
+    const ACL_GROUP: u16 = 0x08;
+
+    /// Parses the kernel's `system.posix_acl_access` value: a 4-byte version followed by
+    /// 8-byte entries (tag, permissions, id). Named user or group entries grant access to
+    /// accounts beyond the owner, group and others in the mode bits.
+    pub(super) fn acl_names_others(value: &[u8]) -> bool {
+        // Only version 2 is defined; anything else is treated as untrusted rather than guessed.
+        if value.len() < 4
+            || value[..4] != 2u32.to_le_bytes()
+            || !(value.len() - 4).is_multiple_of(8)
+        {
+            return true;
+        }
+        value[4..].chunks_exact(8).any(|entry| {
+            matches!(
+                u16::from_le_bytes([entry[0], entry[1]]),
+                ACL_USER | ACL_GROUP
+            )
+        })
+    }
+
+    pub(super) fn check_acl(dir: &File) -> Result<()> {
+        let mut buffer = [0u8; 4096];
+        let length = unsafe {
+            libc::fgetxattr(
+                dir.as_raw_fd(),
+                c"system.posix_acl_access".as_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        };
+        if length < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ENODATA) | Some(libc::EOPNOTSUPP) => Ok(()),
+                _ => Err(NativeError::from(format!(
+                    "Folder access list could not be read ({error}), so cleanup will not change it"
+                ))),
+            };
+        }
+        if acl_names_others(&buffer[..length as usize]) {
+            return Err("Folder has an access list (POSIX ACL) for other users or groups, so cleanup will not change it".into());
+        }
+        Ok(())
+    }
+
+    /// Accounts must come only from local files, so the files read here are complete.
+    /// A database listed more than once is refused, since which line wins is not obvious.
+    pub(super) fn local_accounts_only(nsswitch: &str) -> bool {
+        let sources = |database: &str| {
+            nsswitch
+                .lines()
+                .filter_map(|line| {
+                    let line = line.split('#').next().unwrap_or("");
+                    let (key, value) = line.split_once(':')?;
+                    (key.trim() == database).then(|| value.split_whitespace().collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>()
+        };
+        ["passwd", "group"].iter().all(|database| {
+            matches!(
+                sources(database).as_slice(),
+                [only] if matches!(only.as_slice(), ["files"] | ["files", "systemd"])
+            )
+        })
+    }
+
+    /// True when `/etc/group` has exactly one line for `gid`, named `user`, with no listed
+    /// members and no usable group password. Several lines can share a gid (for example
+    /// `dev:x:1001:` and `devops:x:1001:mallory`), and each grants its members that group,
+    /// so all lines are read directly instead of asking `getgrgid_r` for the first one.
+    pub(super) fn sole_private_group(
+        group: &str,
+        gshadow: Option<&str>,
+        user: &str,
+        gid: u32,
+    ) -> bool {
+        let Some(entries) = account_lines(group, 2) else {
+            return false;
+        };
+        let lines: Vec<_> = entries.into_iter().filter(|(id, _)| *id == gid).collect();
+        let [(_, fields)] = lines.as_slice() else {
+            return false;
+        };
+        let locked = |password: &str| matches!(password, "" | "x" | "!" | "*" | "!*");
+        if fields.len() != 4 || fields[0] != user || !fields[3].is_empty() || !locked(fields[1]) {
+            return false;
+        }
+        // gshadow can hold a group password (usable with newgrp) and its own member and
+        // administrator lists. `x` there is not a placeholder, so it does not count as locked.
+        gshadow.is_none_or(|gshadow| {
+            gshadow
+                .lines()
+                .map(|line| line.split(':').collect::<Vec<_>>())
+                .filter(|entry| entry[0] == user)
+                .all(|entry| {
+                    entry.len() == 4
+                        && matches!(entry[1], "" | "!" | "*" | "!*")
+                        && entry[2].is_empty()
+                        && entry[3].is_empty()
+                })
+        })
+    }
+
+    /// True when no account other than `user` has `gid` as its primary group.
+    pub(super) fn only_primary_member(passwd: &str, user: &str, gid: u32) -> bool {
+        account_lines(passwd, 3).is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|(id, fields)| fields[0] == user || *id != gid)
+        })
+    }
+
+    /// Splits `/etc/group` or `/etc/passwd` into entries with their numeric id at `field`.
+    /// glibc reads ids with `strtoul`, which also accepts leading spaces and signs, so
+    /// `devops:x: 1001:mallory` still grants gid 1001. Any id that is not plain ASCII digits
+    /// fitting in 32 bits therefore returns `None` (not private) instead of being skipped.
+    /// Blank lines, comments and NIS `+`/`-` lines are ignored.
+    fn account_lines(text: &str, field: usize) -> Option<Vec<(u32, Vec<&str>)>> {
+        text.lines()
+            .filter(|line| {
+                !line.trim().is_empty()
+                    && !line.starts_with('#')
+                    && !line.starts_with('+')
+                    && !line.starts_with('-')
+            })
+            .map(|line| {
+                let fields: Vec<_> = line.split(':').collect();
+                let id = fields.get(field)?;
+                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                Some((id.parse::<u32>().ok()?, fields))
+            })
+            .collect()
+    }
+
+    fn user_name(uid: u32) -> Option<String> {
+        let mut buffer = vec![0u8; 16 * 1024];
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found = std::ptr::null_mut();
+        let code = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if code != 0 || found.is_null() {
+            return None;
+        }
+        Some(
+            unsafe { CStr::from_ptr(entry.pw_name) }
+                .to_str()
+                .ok()?
+                .to_owned(),
+        )
+    }
+
+    /// The effective group when it is this user's own group: one `/etc/group` line named like
+    /// the user, with no members or group password, and no other account using it as a
+    /// primary group. Any read failure means "not private", except an unreadable or missing
+    /// `/etc/gshadow`: it is root-only on common distributions, and only root can put a
+    /// password or members there, so skipping it does not let another user join the group.
+    pub(super) fn private_group() -> Option<u32> {
+        let nsswitch = fs::read_to_string("/etc/nsswitch.conf").ok()?;
+        if !local_accounts_only(&nsswitch) {
+            return None;
+        }
+        let gid = unsafe { libc::getegid() };
+        let user = user_name(unsafe { libc::geteuid() })?;
+        let group = fs::read_to_string("/etc/group").ok()?;
+        let gshadow = match fs::read_to_string("/etc/gshadow") {
+            Ok(text) => Some(text),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                None
+            }
+            Err(_) => return None,
+        };
+        let passwd = fs::read_to_string("/etc/passwd").ok()?;
+        (sole_private_group(&group, gshadow.as_deref(), &user, gid)
+            && only_primary_member(&passwd, &user, gid))
+        .then_some(gid)
+    }
+}
+
+/// Plain-language text for native errors met during cleanup. The errno stays in the receipt.
+fn readable(error: NativeError) -> NativeError {
+    let text = match error.code {
+        Some(libc::ENOENT) => {
+            "Already gone: this item no longer exists, so nothing was deleted here"
+        }
+        Some(libc::EACCES) => "Permission denied: this account cannot open or change this folder",
+        Some(libc::EPERM) => {
+            "Not permitted: the item may be marked immutable or append-only (for example with chattr +i or +a), or belong to another user inside a sticky folder"
+        }
+        Some(libc::EROFS) => "The filesystem is mounted read-only here",
+        Some(libc::EBUSY) => "The item is busy, for example because it is a mount point",
+        Some(libc::ENOTEMPTY) | Some(libc::EEXIST) => {
+            "Folder is not empty: something added files while cleanup was running"
+        }
+        Some(libc::EXDEV) => "A different mount is attached here; cleanup does not cross mounts",
+        Some(libc::ELOOP) => "The item is now a symbolic link; cleanup does not follow links",
+        Some(libc::ENOTDIR) => "The item is no longer a folder",
+        _ => return error,
+    };
+    NativeError {
+        message: format!("{text} ({})", error.message),
+        code: error.code,
+    }
 }
 
 use rayon::prelude::*;
@@ -1265,6 +1593,7 @@ struct Guard {
     links: Vec<(Arc<File>, Vec<u8>, Arc<File>)>,
     mount: String,
     device: u64,
+    trust: Arc<Trust>,
 }
 impl Guard {
     fn validate(&self, control: &Control, stop: &AtomicBool) -> Result<()> {
@@ -1294,6 +1623,7 @@ struct Failure {
     code: Option<i32>,
 }
 fn failure(path: String, error: NativeError) -> Failure {
+    let error = readable(error);
     Failure {
         path,
         message: error.message,
@@ -1317,12 +1647,16 @@ fn remove_entry(
         let stat = stat_at(&parent, &name)?;
         let mode = stat.st_mode & libc::S_IFMT;
         let is_dir = mode == libc::S_IFDIR;
-        if stat.st_dev as u64 != guard.device
-            || leaf_identity(&stat, &guard.mount) != expected
-            || is_dir != (kind == "dir")
-        {
-            return Err("Target identity, kind or mount changed; cleanup stopped".into());
+        if stat.st_dev as u64 != guard.device {
+            return Err(
+                "A different filesystem is mounted here; cleanup does not cross mounts".into(),
+            );
         }
+        if leaf_identity(&stat, &guard.mount) != expected || is_dir != (kind == "dir") {
+            return Err("Target identity or kind changed; cleanup stopped".into());
+        }
+        // Linux unlinks sockets, pipes and device nodes as names without opening them.
+        #[cfg(target_os = "macos")]
         if !is_dir && mode != libc::S_IFREG && mode != libc::S_IFLNK {
             return Err("Special files cannot be removed by cleanup".into());
         }
@@ -1342,13 +1676,16 @@ fn remove_entry(
             return Err(failure(path, "Directory nesting exceeds 512".into()));
         }
         let child = Arc::new(open_at(&parent, &name, true).map_err(|e| failure(path.clone(), e))?);
-        if !stat_matches(&original, &child).map_err(|e| failure(path.clone(), e))?
-            || mount(&child).map_err(|e| failure(path.clone(), e))? != guard.mount
-        {
+        if !stat_matches(&original, &child).map_err(|e| failure(path.clone(), e))? {
             return Err(failure(path, "Directory changed before traversal".into()));
         }
-        let live = json!({"readOnly":false});
-        eligible(&child, &live).map_err(|e| failure(path.clone(), e))?;
+        if mount(&child).map_err(|e| failure(path.clone(), e))? != guard.mount {
+            return Err(failure(
+                path,
+                "Another mount (for example a bind mount) is attached here; cleanup does not cross mounts".into(),
+            ));
+        }
+        trusted_dir(&child, true, &guard.trust).map_err(|e| failure(path.clone(), e))?;
         let next = guard.descend(parent.clone(), name.clone(), child.clone());
         let entries = names(&child).map_err(|e| failure(path.clone(), e))?;
         // The pool bounds active workers; descendants are discovered once, without a count pass.
@@ -1408,12 +1745,7 @@ fn remove_entry(
         )
     } != 0
     {
-        let error = std::io::Error::last_os_error();
-        return Err(Failure {
-            path,
-            message: error.to_string(),
-            code: error.raw_os_error(),
-        });
+        return Err(failure(path, ioerr()));
     }
     Ok(())
 }
@@ -1486,7 +1818,9 @@ fn delete(state: &Path, request: &Value, worker: &Value, control: &Control) -> R
     }
     let (root_path, root, live) = checked_root(&request["root"])?;
     cleanup_filesystem(&root, &live)?;
-    eligible(&root, &live)?;
+    root_allowed(&root, &live)?;
+    let trust = Arc::new(Trust::load());
+    trusted_dir(&root, false, &trust)?;
     if read_json(&policy_file(state, &request["root"]))?.is_none_or(|p| p["enabled"] != true) {
         return Err("Cleanup is disabled for this root".into());
     }
@@ -1499,6 +1833,7 @@ fn delete(state: &Path, request: &Value, worker: &Value, control: &Control) -> R
         links: Vec::new(),
         mount: root_mount,
         device,
+        trust,
     };
     let mut parsed = Vec::new();
     for target in targets {
@@ -1572,13 +1907,13 @@ fn delete(state: &Path, request: &Value, worker: &Value, control: &Control) -> R
                     open_at(&parent, part, true)
                         .map_err(|e| failure(display(&guard.root_path, &parts[..=i]), e))?,
                 );
-                if !stat_matches(&stat, &child).map_err(|e| failure(path.clone(), e))?
-                    || mount(&child).map_err(|e| failure(path.clone(), e))? != guard.mount
+                let at = display(&guard.root_path, &parts[..=i]);
+                if !stat_matches(&stat, &child).map_err(|e| failure(at.clone(), e))?
+                    || mount(&child).map_err(|e| failure(at.clone(), e))? != guard.mount
                 {
-                    return Err(failure(path.clone(), "Ancestor or mount changed".into()));
+                    return Err(failure(at, "Ancestor or mount changed".into()));
                 }
-                eligible(&child, &json!({"readOnly":false}))
-                    .map_err(|e| failure(path.clone(), e))?;
+                trusted_dir(&child, false, &guard.trust).map_err(|e| failure(at, e))?;
                 target_guard = target_guard.descend(parent, part.clone(), child.clone());
                 parent = child;
             }
@@ -1647,7 +1982,8 @@ pub fn dispatch(
                 .ok_or("Expected enabled boolean")?;
             if enabled {
                 cleanup_filesystem(&file, &root)?;
-                eligible(&file, &root)?;
+                root_allowed(&file, &root)?;
+                trusted_dir(&file, false, &Trust::load())?;
             }
             durable(
                 &policy_file(state, &request["root"]),
@@ -1994,6 +2330,7 @@ mod tests {
             links: Vec::new(),
             mount: mount(&parent).unwrap(),
             device: parent.metadata().unwrap().dev(),
+            trust: Arc::new(Trust::load()),
         }
         .descend(parent, b"child".to_vec(), child.clone());
         let expected = observed(&observation, &[b"child", b"file"])["identity"].clone();
@@ -2084,6 +2421,7 @@ mod tests {
             links: Vec::new(),
             mount: mount(&parent).unwrap(),
             device: parent.metadata().unwrap().dev(),
+            trust: Arc::new(Trust::load()),
         }
         .descend(parent, b"child".to_vec(), child.clone());
         let expected = observed(&observation, &[b"child", b"file"])["identity"].clone();
@@ -2121,9 +2459,13 @@ mod tests {
         let (_, mut root) = inspect(&path).unwrap();
         root["identity"]["mount"] = json!("0");
         assert!(checked_root(&root).is_err());
-        let (file, mut live) = inspect(&path).unwrap();
-        live["path"] = json!("/");
-        assert!(eligible(&file, &live).is_err());
+        // macOS keeps refusing `/` as a cleanup root; Linux allows it with the depth rule.
+        #[cfg(target_os = "macos")]
+        {
+            let (file, mut live) = inspect(&path).unwrap();
+            live["path"] = json!("/");
+            assert!(root_allowed(&file, &live).is_err());
+        }
     }
     #[test]
     fn unreadable_regular_files_keep_totals_and_can_be_unlinked() {
@@ -2372,6 +2714,7 @@ mod tests {
             assert_eq!(mount(&data).unwrap(), observed["mount"]);
         }
     }
+    #[cfg(target_os = "macos")]
     #[test]
     fn group_writable_cleanup_root_is_refused() {
         let fixture = Fixture::new();
@@ -2379,5 +2722,253 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o770)).unwrap();
         let (file, live) = inspect(&root).unwrap();
         assert!(eligible(&file, &live).is_err());
+    }
+    #[test]
+    fn cleanup_errors_explain_errno_and_keep_code() {
+        let gone = failure(
+            "x".into(),
+            std::io::Error::from_raw_os_error(libc::ENOENT).into(),
+        );
+        assert!(gone.message.starts_with("Already gone"));
+        assert_eq!(gone.code, Some(libc::ENOENT));
+        for (code, text) in [
+            (libc::EACCES, "Permission denied"),
+            (libc::EPERM, "immutable or append-only"),
+            (libc::EROFS, "read-only"),
+            (libc::EBUSY, "mount point"),
+            (libc::ENOTEMPTY, "not empty"),
+        ] {
+            let failure = failure("x".into(), std::io::Error::from_raw_os_error(code).into());
+            assert!(failure.message.contains(text), "{}", failure.message);
+        }
+        assert_eq!(failure("x".into(), "plain".into()).message, "plain");
+    }
+    #[cfg(target_os = "linux")]
+    fn linux_trust(private_gid: Option<u32>) -> Trust {
+        Trust {
+            euid: 1000,
+            private_gid,
+        }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_ancestor_and_tree_owner_rules() {
+        let trust = linux_trust(Some(1001));
+        let ok = |uid, gid, mode, in_tree| linux_trust::check_mode(uid, gid, mode, in_tree, &trust);
+        // Root-owned ancestors such as /, /home and the sticky /tmp are trusted.
+        assert!(ok(0, 0, 0o40755, false).is_ok());
+        assert!(ok(0, 0, 0o41777, false).is_ok());
+        // Folders being deleted must belong to this account, never to root or someone else.
+        assert!(ok(0, 0, 0o40755, true).is_err());
+        assert!(ok(1234, 1234, 0o40755, false).is_err());
+        assert!(
+            ok(1234, 1234, 0o40755, true)
+                .unwrap_err()
+                .to_string()
+                .contains("owned by another user")
+        );
+        assert!(ok(1000, 1001, 0o40700, true).is_ok());
+        // Other-writable needs the sticky bit.
+        assert!(
+            ok(1000, 1001, 0o40777, true)
+                .unwrap_err()
+                .to_string()
+                .contains("writable by other users")
+        );
+        assert!(ok(1000, 1001, 0o41777, true).is_ok());
+        // Group-writable passes only for this user's private group or with the sticky bit.
+        assert!(ok(1000, 1001, 0o40775, true).is_ok());
+        assert!(ok(1000, 1000, 0o40775, true).is_err());
+        assert!(ok(1000, 1000, 0o41775, true).is_ok());
+        assert!(ok(0, 1001, 0o40775, false).is_err());
+        let shared = linux_trust(None);
+        assert!(linux_trust::check_mode(1000, 1001, 0o40775, false, &shared).is_err());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_private_group_inputs() {
+        assert!(linux_trust::local_accounts_only(
+            "# comment\npasswd:         files systemd\ngroup:          files systemd\nshadow: files\n"
+        ));
+        assert!(linux_trust::local_accounts_only(
+            "passwd: files\ngroup: files # local\n"
+        ));
+        assert!(!linux_trust::local_accounts_only(
+            "passwd: files sss\ngroup: files sss\n"
+        ));
+        assert!(!linux_trust::local_accounts_only(
+            "passwd: files\ngroup: files [SUCCESS=merge] systemd\n"
+        ));
+        assert!(!linux_trust::local_accounts_only("passwd: files\n"));
+        assert!(!linux_trust::local_accounts_only(
+            "passwd: files\ngroup: files\npasswd: files ldap\n"
+        ));
+        assert!(!linux_trust::local_accounts_only(
+            "passwd: files\ngroup: files\ngroup: files\n"
+        ));
+        let group = "root:x:0:\nsudo:x:27:dev\ndev:x:1001:\n";
+        let private = |group: &str, gshadow: Option<&str>| {
+            linux_trust::sole_private_group(group, gshadow, "dev", 1001)
+        };
+        assert!(private(group, None));
+        assert!(private(group, Some("root:*::\ndev:!::\n")));
+        assert!(private(group, Some("dev:::\n")));
+        // A second line with the same gid grants its members the group too.
+        assert!(!private(&format!("{group}devops:x:1001:mallory\n"), None));
+        assert!(!private(&format!("{group}devops:x:1001:\n"), None));
+        assert!(!private("dev:x:1001:mallory\n", None));
+        assert!(!private("developers:x:1001:\n", None));
+        assert!(!private("dev:x:1002:\n", None));
+        assert!(!private("dev:$6$hash:1001:\n", None));
+        assert!(!private(group, Some("dev:$6$hash::\n")));
+        assert!(!private(group, Some("dev:x::\n")));
+        assert!(!private(group, Some("dev:!::mallory\n")));
+        assert!(!private(group, Some("dev:!:mallory:\n")));
+        // glibc's strtoul accepts these ids, so lines we cannot read as plain digits refuse.
+        for odd in [
+            " 1001",
+            "-1001",
+            "+1001",
+            "1001 ",
+            "",
+            "0x3e9",
+            "99999999999",
+        ] {
+            assert!(
+                !private(&format!("{group}devops:x:{odd}:mallory\n"), None),
+                "{odd:?}"
+            );
+        }
+        assert!(!private(&format!("{group}broken\n"), None));
+        // Blank lines, comments and NIS lines are not group entries.
+        assert!(private(&format!("# note\n\n{group}+:::\n-nis::\n"), None));
+        assert!(!linux_trust::local_accounts_only(
+            "passwd: compat\ngroup: compat\n"
+        ));
+        let passwd = "root:x:0:0::/root:/bin/sh\ndev:x:1000:1001::/home/dev:/bin/sh\n";
+        assert!(linux_trust::only_primary_member(passwd, "dev", 1001));
+        assert!(!linux_trust::only_primary_member(
+            &format!("{passwd}other:x:1002:1001::/home/other:/bin/sh\n"),
+            "dev",
+            1001
+        ));
+        assert!(!linux_trust::only_primary_member(
+            &format!("{passwd}other:x:1002: 1001::/home/other:/bin/sh\n"),
+            "dev",
+            1001
+        ));
+        assert_eq!(
+            linux_trust::effective_capabilities("Name:\tw\nCapEff:\t0000000000000000\n"),
+            Some(0)
+        );
+        assert_eq!(
+            linux_trust::effective_capabilities("CapEff:\t000001ffffffffff\n"),
+            Some(0x1ff_ffff_ffff)
+        );
+        assert_eq!(linux_trust::effective_capabilities("Name:\tw\n"), None);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_acl_entries_for_named_accounts_are_untrusted() {
+        let entry = |tag: u16, id: u32| {
+            let mut bytes = tag.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&7u16.to_le_bytes());
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes
+        };
+        let acl = |entries: &[Vec<u8>]| {
+            let mut bytes = 2u32.to_le_bytes().to_vec();
+            for entry in entries {
+                bytes.extend_from_slice(entry);
+            }
+            bytes
+        };
+        let minimal = acl(&[
+            entry(0x01, u32::MAX),
+            entry(0x04, u32::MAX),
+            entry(0x20, u32::MAX),
+        ]);
+        assert!(!linux_trust::acl_names_others(&minimal));
+        let mut other_version = minimal.clone();
+        other_version[0] = 3;
+        assert!(linux_trust::acl_names_others(&other_version));
+        let named = acl(&[
+            entry(0x01, u32::MAX),
+            entry(0x02, 1234),
+            entry(0x04, u32::MAX),
+            entry(0x10, u32::MAX),
+            entry(0x20, u32::MAX),
+        ]);
+        assert!(linux_trust::acl_names_others(&named));
+        assert!(linux_trust::acl_names_others(&named[..7]));
+        let fixture = Fixture::new();
+        let root = fixture.dir("root");
+        let dir = open_root(&root).unwrap();
+        linux_trust::check_acl(&dir).unwrap();
+        let path = cstr(root.as_os_str().as_bytes()).unwrap();
+        let set = unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                c"system.posix_acl_access".as_ptr(),
+                named.as_ptr().cast(),
+                named.len(),
+                0,
+            )
+        };
+        if set != 0 {
+            // Some test filesystems do not support POSIX ACLs; the parser test above still runs.
+            return;
+        }
+        assert!(
+            linux_trust::check_acl(&dir)
+                .unwrap_err()
+                .to_string()
+                .contains("POSIX ACL")
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_root_path_is_an_allowed_root_and_special_files_unlink() {
+        let _test_lock = CLEANUP_TEST_LOCK.lock().unwrap();
+        let status = fs::read_to_string("/proc/self/status").unwrap();
+        if unsafe { libc::geteuid() } != 0
+            && linux_trust::effective_capabilities(&status) == Some(0)
+        {
+            let (file, live) = inspect(Path::new("/")).unwrap();
+            if live["readOnly"] == false {
+                root_allowed(&file, &live).unwrap();
+                trusted_dir(&file, false, &Trust::load()).unwrap();
+            }
+        }
+        let fixture = Fixture::new();
+        let state = fixture.dir("state");
+        let root = fixture.dir("root");
+        fixture.dir("root/child/tree");
+        let fifo = cstr(root.join("child/tree/fifo").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        // Socket paths are limited to about 100 bytes, so bind at the fixture top and move it.
+        let socket = fixture.0.join("s");
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        fs::rename(&socket, root.join("child/tree/socket")).unwrap();
+        let (_, observation) = inspect(&root).unwrap();
+        let worker = worker_identity(&state).unwrap();
+        assert_eq!(worker["capabilities"]["linuxPathTrust"], true);
+        let control = Control::testing();
+        dispatch(
+            &state,
+            &json!({"op":"cleanup","root":observation,"enabled":true}),
+            &worker,
+            &control,
+        )
+        .unwrap();
+        let receipt = delete(
+            &state,
+            &json!({"root":observation,"operationId":"special","targets":[observed(&observation,&[b"child",b"tree"])]}),
+            &worker,
+            &control,
+        )
+        .unwrap();
+        assert_eq!(receipt["failed"], json!([]));
+        assert!(!root.join("child/tree").exists());
     }
 }

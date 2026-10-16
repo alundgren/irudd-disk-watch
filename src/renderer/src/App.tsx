@@ -798,6 +798,17 @@ export function App() {
                   : 'Queue for deletion'}
               </button>
             )}
+          {menu.target.canDelete &&
+            menu.target.kind &&
+            !isWindows(menu.owner.page.disk) &&
+            !isHistorical(menu.owner.page.disk) &&
+            !canCleanup(menu.owner.page.disk) && (
+              // aria-disabled keeps the item reachable with the arrow keys so its reason can be read.
+              <button role="menuitem" aria-disabled="true" className="menu-unavailable">
+                Queue for deletion
+                <span className="small">Turn on deletion in Settings</span>
+              </button>
+            )}
         </div>
       )}
       {chooser && (
