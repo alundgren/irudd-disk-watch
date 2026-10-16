@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from './api'
+import { errorText } from './bulkQueue'
 
 export function MacDiskAccess() {
   const [message, setMessage] = useState('')
@@ -8,7 +9,7 @@ export function MacDiskAccess() {
       await api.openFullDiskAccessSettings()
       setMessage('')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
+      setMessage(errorText(error))
     }
   }
   return (

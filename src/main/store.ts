@@ -33,6 +33,8 @@ import type {
   ScanStatus,
   ScanSummary,
   ScanIssues,
+  SearchQuery,
+  SearchResult,
   TreeRow,
 } from '../shared/types'
 
@@ -114,7 +116,9 @@ const NTFS_METADATA: [string, NodeKind][] = [
   ['$Extend', 'dir'],
 ]
 
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
+/** Space shows at most this many filter matches, largest first. */
+export const SEARCH_LIMIT = 1000
 export const LEGACY_WINDOWS_MACHINE_ID = 'legacy-windows'
 
 function migrateNative(db: DatabaseSync): void {
@@ -216,6 +220,8 @@ export function openDb(file: string): DatabaseSync {
       }
       if (applied < 4) migrateNative(db)
       if (applied < 5) db.exec('ALTER TABLE disk ADD COLUMN root_refresh_scan INTEGER NOT NULL DEFAULT 0')
+      // Read errors at or under a native entry. NULL means the worker did not report it.
+      if (applied < 6) db.exec('ALTER TABLE entry ADD COLUMN subtree_errors INTEGER')
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
       if (db.prepare('PRAGMA foreign_key_check').all().length)
         throw new Error('History contains invalid ownership references.')
@@ -824,25 +830,41 @@ export class Store {
     const latest = this.latestCompleteScan(diskId)
     if (!latest) throw new Error('Scan this disk before staging deletion.')
     if (disk.targetOS !== 'windows') {
-      if (latest.coverage !== 'complete')
-        throw new Error('A complete-coverage native scan is required before staging cleanup.')
       const gate = this.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(diskId)!
       if (latest.id <= Number(gate.root_refresh_scan))
         throw new Error('Scan this root again after reinspection before staging deletion.')
     }
     const entry = this.db
       .prepare(
-        `SELECT n.kind, e.size, e.files, e.native_identity FROM node n JOIN entry e ON e.node_id = n.id WHERE n.id = ? AND e.scan_id = ?`,
+        `SELECT n.kind, e.size, e.files, e.native_identity, e.subtree_errors FROM node n JOIN entry e ON e.node_id = n.id WHERE n.id = ? AND e.scan_id = ?`,
       )
       .get(nodeId, latest.id) as
-      { kind: NodeKind; size: number; files: number; native_identity: string | null } | undefined
+      | {
+          kind: NodeKind
+          size: number
+          files: number
+          native_identity: string | null
+          subtree_errors: number | null
+        }
+      | undefined
     if (!entry || entry.kind === 'rest')
       throw new Error('This item is not in the latest scan. Scan again before staging it.')
     if (disk.targetOS !== 'windows') {
+      // A partial scan is enough only when nothing at or under the target failed to read.
+      const partial = latest.coverage !== 'complete'
+      if (partial && entry.subtree_errors === null)
+        throw new Error(
+          'The latest scan has unreadable items and does not record where they are. Update the worker and scan again before staging deletion.',
+        )
+      if (partial && entry.subtree_errors! > 0)
+        throw new Error(
+          `${entry.subtree_errors === 1 ? '1 item' : `${entry.subtree_errors!.toLocaleString('en-US')} items`} at or under this path could not be read in the latest scan. Only items with nothing unreadable inside can be staged from a partial scan.`,
+        )
       const root = this.scanRoot(latest.id)
       if (!entry.native_identity || !root)
         throw new Error('This scan has no native object identity. Scan again before staging deletion.')
       return {
+        ...(partial ? { partialScan: true } : {}),
         nodeId,
         scanId: latest.id,
         path,
@@ -992,6 +1014,86 @@ export class Store {
         return hidden ? { ...row, size: row.size - hidden.size, files: row.files - hidden.files } : row
       })
       .sort((a, b) => b.size - a.size)
+  }
+
+  /**
+   * Walks the scan from its root and stops at the first match on each branch, so
+   * results never nest. Hidden subtrees are skipped and sizes exclude hidden
+   * descendants, as in `children()`. Small files folded into a `rest` node have
+   * no name to match. Name matching folds ASCII case only, like SQLite `lower()`.
+   */
+  search(scanId: number, query: SearchQuery, limit = SEARCH_LIMIT): SearchResult {
+    const disk = this.scanDisk(scanId, undefined, query.revision)
+    const name = typeof query.nameContains === 'string' && query.nameContains !== '' ? query.nameContains : null
+    const days = query.olderThanDays ?? null
+    if (days !== null && (typeof days !== 'number' || !Number.isFinite(days) || days < 0))
+      throw new Error('Age must be a number of days.')
+    if (!Number.isSafeInteger(query.now)) throw new Error('Search needs the current time.')
+    if (name === null && days === null) return { rows: [], total: 0 }
+    const roots = this.hiddenRoots(disk)
+    const adjusted = [...this.adjustments(scanId, roots)]
+    const match = [
+      name === null ? null : 'instr(lower(n.name), lower(:name)) > 0',
+      days === null ? null : 'e.last_written_at IS NOT NULL AND e.last_written_at < :cutoff',
+    ]
+      .filter(Boolean)
+      .join(' AND ')
+    // CROSS JOIN keeps SQLite stepping from each walked folder to its children;
+    // left to the planner it scans every entry of the scan per folder.
+    const rows = this.db
+      .prepare(
+        `WITH RECURSIVE
+         adj(id, size, files) AS (${adjusted.length ? `VALUES ${adjusted.map(([id, m]) => `(${id},${m.size},${m.files})`).join(',')}` : 'SELECT NULL, 0, 0 WHERE 0'}),
+         walk(id, depth, hit) AS (
+           SELECT :root, 0, 0
+           UNION ALL
+           SELECT n.id, w.depth + 1, ${match}
+           FROM walk w
+           CROSS JOIN node n ON n.parent = w.id
+           CROSS JOIN entry e ON e.scan_id = :scan AND e.node_id = n.id
+           WHERE w.hit = 0 AND n.kind != 'rest' AND n.id NOT IN (${roots.length ? roots.join(',') : '-1'})
+         )
+         SELECT n.id AS nodeId, n.name, n.kind, w.depth,
+                e.size - coalesce(a.size, 0) AS size, e.files - coalesce(a.files, 0) AS files,
+                e.created_at AS createdAt, e.last_written_at AS lastWrittenAt, count(*) OVER () AS total
+         FROM walk w
+         JOIN node n ON n.id = w.id
+         JOIN entry e ON e.scan_id = :scan AND e.node_id = w.id
+         LEFT JOIN adj a ON a.id = w.id
+         WHERE w.hit
+         ORDER BY size DESC, n.id
+         LIMIT :limit`,
+      )
+      .all({
+        root: disk.rootNode,
+        scan: scanId,
+        limit,
+        ...(name === null ? {} : { name }),
+        ...(days === null ? {} : { cutoff: query.now - days * 86_400_000 }),
+      }) as unknown as (TreeRow & { depth: number; total: number })[]
+    const paths = this.displayPaths(disk, disk.rootNode)
+    return {
+      total: rows[0]?.total ?? 0,
+      rows: rows.map(({ total: _, ...row }) => ({ ...row, path: paths(row.nodeId) })),
+    }
+  }
+
+  /** Labels for many nodes of one root, sharing parent lookups. */
+  private displayPaths(disk: DiskRow, rootNode: number): (nodeId: number) => string {
+    const separator = disk.targetOS === 'windows' ? '\\' : '/'
+    const parent = this.db.prepare('SELECT parent, name FROM node WHERE id = ?')
+    const known = new Map<number, string>([[rootNode, disk.root]])
+    const path = (nodeId: number): string => {
+      const cached = known.get(nodeId)
+      if (cached !== undefined) return cached
+      const row = parent.get(nodeId) as { parent: number | null; name: string } | undefined
+      if (!row || row.parent === null) throw new Error('The node does not belong to this scan’s disk.')
+      const above = path(row.parent)
+      const label = above.endsWith(separator) ? above + row.name : above + separator + row.name
+      known.set(nodeId, label)
+      return label
+    }
+    return path
   }
 
   diffChildren(fromScan: number, toScan: number, nodeId: number, revision?: number): DiffRow[] {
@@ -1198,6 +1300,14 @@ export class Store {
       this.db.exec('PRAGMA synchronous=NORMAL')
     }
     return this.getDeleteOperation(operationId)
+  }
+
+  /** Removes a record whose request never reached the worker. Sent or finished requests stay. */
+  discardUnsentDeleteOperation(operationId: string): void {
+    const old = this.getDeleteOperation(operationId)
+    if (!['pending', 'running'].includes(old.state) || old.receipt !== undefined)
+      throw new Error('Only an unsent deletion request can be discarded.')
+    this.db.prepare('DELETE FROM delete_operation WHERE operation_id=?').run(operationId)
   }
 
   getDeleteOperation(operationId: string): DeleteOperation {

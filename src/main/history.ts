@@ -43,7 +43,8 @@ function validateFinal(file: string): void {
   const db = new DatabaseSync(file, { readOnly: true })
   try {
     const row = db.prepare('PRAGMA user_version').get()!
-    if (row.user_version !== 4 && row.user_version !== SCHEMA_VERSION)
+    // Native histories start at schema 4; later versions upgrade in openDb.
+    if (Number(row.user_version) < 4 || Number(row.user_version) > SCHEMA_VERSION)
       throw new Error(`Existing native history has unsupported schema ${row.user_version}.`)
     version = Number(row.user_version)
     validate(db)

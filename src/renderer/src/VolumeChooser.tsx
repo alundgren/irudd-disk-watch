@@ -3,6 +3,7 @@ import type { Disk, NativeVolume } from '../../shared/types'
 import { api, formatBytes, formatCount, formatWhen } from './api'
 import { canTrackVolume, volumeChoices, volumeExplanation } from './volumeChoice'
 import { initialDiscovery, volumeDiscovery } from './volumeDiscovery'
+import { errorText } from './bulkQueue'
 
 type Source = 'local' | 'ssh'
 interface Props {
@@ -33,8 +34,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
       if (!active.current || identity !== request.current) return
       dispatch({ type: 'received', request: identity, discovery: result })
     } catch (error) {
-      if (active.current)
-        dispatch({ type: 'failed', request: identity, message: error instanceof Error ? error.message : String(error) })
+      if (active.current) dispatch({ type: 'failed', request: identity, message: errorText(error) })
     }
   }, [])
 
@@ -78,7 +78,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
         dispatch({
           type: 'inspection-error',
           request: request.current,
-          message: error instanceof Error ? error.message : String(error),
+          message: errorText(error),
         })
     } finally {
       if (active.current) setAdding(false)

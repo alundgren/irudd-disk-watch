@@ -8,12 +8,25 @@ import {
   MAX_DIAGNOSTIC_BYTES,
   MAX_FRAME_BYTES,
   type WorkerFrame,
+  workerInfo,
 } from '../shared/workerProtocol.ts'
 
 export interface WorkerConnection {
   machine: Machine
   scannerExe: string
   stateDir?: string
+}
+
+/** Linux workers built before per-folder trust checks refuse most real roots, such as `/`. */
+export const LINUX_WORKER_UPDATE =
+  'The Linux worker on this machine is out of date, so deletion is unavailable. Update the worker (see "Update the Linux worker" in the README), then try again.'
+
+/**
+ * The worker never received the request, so nothing on disk changed. Callers that record an
+ * operation before sending it can discard that record instead of treating the outcome as unknown.
+ */
+export class WorkerRequestNotSent extends Error {
+  override name = 'WorkerRequestNotSent'
 }
 
 export type WorkerOperation =
@@ -71,6 +84,9 @@ export function workerCommand(connection: WorkerConnection): { executable: strin
   return { executable: scannerExe, args: ['--worker', ...(stateDir ? ['--state-dir', stateDir] : [])] }
 }
 
+const cleanupMutation = (op: WorkerOperation, parameters: Record<string, unknown>) =>
+  op === 'delete' || (op === 'cleanup' && parameters.enabled === true)
+
 /** One owned subprocess per operation. Stdin remains a live control channel. */
 export async function* workerFrames(
   connection: WorkerConnection,
@@ -87,6 +103,19 @@ export async function* workerFrames(
   const request =
     JSON.stringify({ ...parameters, v: 1, requestId, op, ...(expectedWorker ? { expectedWorker } : {}) }) + '\n'
   if (Buffer.byteLength(request) > MAX_FRAME_BYTES) throw new Error('Worker request exceeds its size limit.')
+  // A worker reports its capabilities only after reading the request, so an older Linux worker
+  // would already have received the cleanup request. Ask with a separate `hello` first and stop
+  // before sending anything that changes files. The check on the real handshake below still
+  // covers a worker replaced between the two processes.
+  if (machine.os === 'linux' && cleanupMutation(op, parameters)) {
+    let trusted: boolean | undefined
+    try {
+      trusted = workerInfo(await workerOperation(connection, 'hello', {}, signal)).capabilities.linuxPathTrust
+    } catch (error) {
+      throw new WorkerRequestNotSent(error instanceof Error ? error.message : String(error))
+    }
+    if (!trusted) throw new WorkerRequestNotSent(LINUX_WORKER_UPDATE)
+  }
   const command = workerCommand(connection)
   const child = spawn(command.executable, command.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -142,6 +171,8 @@ export async function* workerFrames(
         if (op === 'scan' && !frame.worker.capabilities.scan) throw new Error('This worker cannot scan.')
         if (op === 'delete' && !frame.worker.capabilities.delete)
           throw new Error('This worker does not support cleanup.')
+        if (frame.worker.os === 'linux' && !frame.worker.capabilities.linuxPathTrust && cleanupMutation(op, parameters))
+          throw new Error(LINUX_WORKER_UPDATE)
         sawHello = true
         continue
       }

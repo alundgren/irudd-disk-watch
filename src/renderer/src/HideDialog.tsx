@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { pathAncestors } from '../../shared/paths'
+import { errorText } from './bulkQueue'
 
 interface HideDialogProps {
   root: string
@@ -46,7 +47,7 @@ export function HideDialog({ root, path, components, unix, editing, onSave, onCl
       await onSave(value, selected)
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
     } finally {
       setSaving(false)
     }

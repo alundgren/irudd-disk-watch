@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import type {
   Comparison,
   DeleteResult,
@@ -8,6 +8,7 @@ import type {
   HideChange,
   HideSettings,
   NodeKind,
+  SearchRow,
   ScanProgress,
   StagedDelete,
   TreeRow,
@@ -21,7 +22,8 @@ import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
 import { VolumeChooser } from './VolumeChooser'
-import { sameTarget, containsTarget, summarizeStaged } from './deleteQueue'
+import { sameTarget, containsTarget, summarizeStaged, verifiedScanTime, QueueIndex } from './deleteQueue'
+import { errorText, LIMIT_REASON, QUEUE_LIMIT, type BulkOutcome, type SkippedItem } from './bulkQueue'
 
 type Tab = 'space' | 'treemap' | 'changes' | 'settings'
 interface Intent {
@@ -43,6 +45,8 @@ interface Notice {
   text: string
   undo?: () => void
   details?: () => void
+  /** A finished scan of this disk makes the notice out of date, so it is dismissed. */
+  untilScanOf?: number
 }
 
 interface HideOwner {
@@ -76,6 +80,10 @@ export function App() {
   const [deleteFailure, setDeleteFailure] = useState<DeleteResult | null>(null)
   const [elevated, setElevated] = useState(true)
   const [stagedByDisk, setStagedByDisk] = useState<Record<number, StagedDelete[]>>({})
+  const stagedRef = useRef(stagedByDisk)
+  stagedRef.current = stagedByDisk
+  const disksRef = useRef(disks)
+  disksRef.current = disks
   const [deletingDisk, setDeletingDisk] = useState<number | null>(null)
   const deleting = deletingDisk !== null
   const deletingRef = useRef(false)
@@ -101,10 +109,11 @@ export function App() {
   const intent = useRef<Intent | null>(null)
   const activePage = useRef<Page | null>(null)
   activePage.current = page
-  const report = (error: unknown) => setNotice({ text: error instanceof Error ? error.message : String(error) })
+  const report = (error: unknown) => setNotice({ text: errorText(error) })
 
   const navigate = useCallback(async (next: Intent) => {
-    staging.current.clear()
+    // A bulk queue survives reloads of its own view; leaving Space aborts it from the dialog.
+    for (const key of [...staging.current.keys()]) if (!key.endsWith(':bulk')) staging.current.delete(key)
     const identity = ++request.current
     ++hideAction.current
     intent.current = next
@@ -122,13 +131,7 @@ export function App() {
           ...current,
           [next.diskId]: pending.filter((operation) => operation.state !== 'completed'),
         }))
-        setVerifiedScans((current) => ({
-          ...current,
-          [next.diskId]: Math.max(
-            0,
-            ...scans.filter((scan) => scan.coverage !== 'partial').map((scan) => scan.startedAt),
-          ),
-        }))
+        setVerifiedScans((current) => ({ ...current, [next.diskId]: verifiedScanTime(scans) }))
       }
       const revision = snapshot.disk.hides.revision
       let prepared: Page
@@ -170,7 +173,7 @@ export function App() {
         setNavigation({
           status: 'error',
           intent: next,
-          message: error instanceof Error ? error.message : String(error),
+          message: errorText(error),
         })
     }
   }, [])
@@ -208,6 +211,8 @@ export function App() {
       if (event.type === 'run-finished') setProgress(null)
       if (event.type === 'disk-finished' && event.status === 'failed')
         setNotice({ text: `A scan failed: ${event.message}` })
+      if (event.type === 'disk-finished' && event.status === 'complete')
+        setNotice((current) => (current?.untilScanOf === event.diskId ? null : current))
       void refresh()
     })
   }, [refresh])
@@ -283,6 +288,99 @@ export function App() {
       if (staging.current.get(key) === action) staging.current.delete(key)
     }
   }
+  const queueBlocked = (diskId: number): string | null => {
+    const owner = disks.find((disk) => disk.id === diskId)
+    if (!owner) return 'This root is no longer tracked.'
+    if (isHistorical(owner)) return 'Saved history cannot delete files.'
+    if (!canCleanup(owner)) return 'Deletion is off for this root. Turn it on in Settings.'
+    if (!isWindows(owner) && operations[diskId] === undefined) return 'Checking earlier deletions…'
+    if (!isWindows(owner) && needsRecovery(diskId))
+      return 'An earlier deletion needs a status check and a fresh scan first.'
+    if (deleting || deletingRef.current) return 'A deletion is running.'
+    return null
+  }
+  /**
+   * Adds staged targets without removing anything already queued, a few requests at a time.
+   * Clear, Execute delete, leaving the root and a newer scan stop the remaining requests.
+   */
+  const queueMany = async (
+    diskId: number,
+    rows: SearchRow[],
+    signal: AbortSignal,
+    onProgress: (done: number) => void,
+  ): Promise<BulkOutcome> => {
+    const blocked = queueBlocked(diskId)
+    if (blocked)
+      return { queued: 0, skipped: rows.map((row) => ({ nodeId: row.nodeId, path: row.path, reason: blocked })) }
+    const key = `${diskId}:bulk`
+    const action = Symbol()
+    staging.current.set(key, action)
+    const scanId = disksRef.current.find((disk) => disk.id === diskId)?.latestScan?.id
+    const userStop = 'Stopped before every item was queued.'
+    let stopped: string | undefined
+    const live = () => {
+      stopped ??= signal.aborted
+        ? userStop
+        : deletingRef.current
+          ? 'Stopped because a deletion started.'
+          : staging.current.get(key) !== action
+            ? 'Stopped because the queue was cleared or the view changed.'
+            : disksRef.current.find((disk) => disk.id === diskId)?.latestScan?.id !== scanId
+              ? 'Stopped because a newer scan finished. Filter again to queue from it.'
+              : undefined
+      return !stopped
+    }
+    const index = new QueueIndex(stagedRef.current[diskId] ?? [])
+    const skipped: SkippedItem[] = []
+    let added: StagedDelete[] = []
+    let committed = 0
+    const flush = () => {
+      const batch = added
+      added = []
+      committed += batch.length
+      if (batch.length)
+        setStagedByDisk((current) => {
+          const items = current[diskId] ?? []
+          const known = new QueueIndex(items)
+          const fresh = batch.filter((target) => !known.holder(target))
+          return fresh.length ? { ...current, [diskId]: [...items, ...fresh] } : current
+        })
+    }
+    const pending = [...rows]
+    let done = 0
+    const next = async () => {
+      for (let row = pending.shift(); row; row = pending.shift()) {
+        const skip = (reason: string) => skipped.push({ nodeId: row!.nodeId, path: row!.path, reason })
+        if (!live()) {
+          skip('Not queued.')
+          continue
+        }
+        try {
+          const target = await api.stageDelete(diskId, row.nodeId)
+          const holder = index.holder(target)
+          if (!live()) skip('Not queued.')
+          else if (holder)
+            skip(sameTarget(holder, target) ? 'Already queued.' : `Already queued inside ${holder.path}.`)
+          else if (!index.add(target, QUEUE_LIMIT)) skip(LIMIT_REASON)
+          else {
+            added.push(target)
+            if (added.length >= 50) flush()
+          }
+        } catch (error) {
+          skip(errorText(error))
+        }
+        onProgress(++done)
+      }
+    }
+    try {
+      await Promise.all([next(), next(), next(), next()])
+    } finally {
+      // Stop keeps what was staged; a cleared queue, a deletion or a newer scan discards the rest.
+      if (!stopped || stopped === userStop) flush()
+      if (staging.current.get(key) === action) staging.current.delete(key)
+    }
+    return { queued: committed, skipped, ...(stopped ? { stopped } : {}) }
+  }
   const removeStaged = (diskId: number, target: StagedDelete) => {
     cancelStaging(diskId)
     setStagedByDisk((current) => ({
@@ -340,6 +438,7 @@ export function App() {
         if (intent.current?.diskId === diskId) setShowQueue(false)
         setNotice({
           text: `Removed ${result.deleted.length} queued ${result.deleted.length === 1 ? 'path' : 'paths'}. Saved scans remain unchanged. Scan again to capture current disk contents.`,
+          untilScanOf: diskId,
         })
       }
     } catch (error) {
@@ -452,10 +551,10 @@ export function App() {
     }
   }
   const disk = page?.disk
-  const staged = disk ? (stagedByDisk[disk.id] ?? []) : []
+  const staged = useMemo(() => (disk ? (stagedByDisk[disk.id] ?? []) : []), [disk, stagedByDisk])
   const unresolved = disk && !isWindows(disk) ? (operations[disk.id] ?? []) : []
   const deletionBlocked = !disk || !canCleanup(disk) || (disk && !isWindows(disk) && needsRecovery(disk.id))
-  const stagedSummary = summarizeStaged(staged)
+  const stagedSummary = useMemo(() => summarizeStaged(staged), [staged])
   const staleQueue = staged.some((item) => item.scanId !== disk?.latestScan?.id)
   const complete = page?.scans.filter((scan) => scan.status === 'complete') ?? []
   return (
@@ -622,7 +721,9 @@ export function App() {
                 </div>
                 <p className="muted small">
                   Permanent deletion. Estimate from the latest scan includes hidden files and uses logical sizes; actual
-                  freed space can differ.{staleQueue && ' Scan changed. Remove and restage queued items.'}
+                  freed space can differ.
+                  {stagedSummary.partial && ' Some items were queued from a partial scan, so freed space may differ.'}
+                  {staleQueue && ' Scan changed. Remove and restage queued items.'}
                 </p>
                 {showQueue && (
                   <ul className="plain-list staged-list">
@@ -690,6 +791,9 @@ export function App() {
               <p className="empty">No scans yet. Use Scan all drives to see what takes up the space.</p>
             ) : page.tab === 'space' ? (
               <SpaceView
+                key={page.disk.id}
+                queueBlocked={queueBlocked(page.disk.id)}
+                onQueueMany={(rows, signal, onProgress) => queueMany(page.disk.id, rows, signal, onProgress)}
                 disk={page.disk}
                 scans={complete}
                 scanId={page.scanId!}
@@ -802,6 +906,27 @@ export function App() {
                   : 'Queue for deletion'}
               </button>
             )}
+          {menu.target.canDelete &&
+            menu.target.kind &&
+            !isWindows(menu.owner.page.disk) &&
+            !isHistorical(menu.owner.page.disk) &&
+            !canCleanup(menu.owner.page.disk) && (
+              // aria-disabled keeps the item reachable with the arrow keys so its reason can be read.
+              <button role="menuitem" aria-disabled="true" className="menu-unavailable">
+                Queue for deletion
+                <span className="small">Turn on deletion in Settings</span>
+              </button>
+            )}
+          {menu.target.canDelete &&
+            menu.target.kind &&
+            canCleanup(menu.owner.page.disk) &&
+            !isWindows(menu.owner.page.disk) &&
+            needsRecovery(menu.owner.diskId) && (
+              <button role="menuitem" aria-disabled="true" className="menu-unavailable">
+                Queue for deletion
+                <span className="small">{queueBlocked(menu.owner.diskId)}</span>
+              </button>
+            )}
         </div>
       )}
       {chooser && (
@@ -856,7 +981,7 @@ interface ScanPanelProps {
 }
 
 function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelProps) {
-  const restart = () => api.restartElevated().catch((err: Error) => onError(err.message))
+  const restart = () => api.restartElevated().catch((err: unknown) => onError(errorText(err)))
   if (progress) {
     const root = disks.find((d) => d.id === progress.diskId)?.root ?? ''
     return (
@@ -883,7 +1008,7 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
       <button
         className="primary"
         disabled={deleting || disks.every(isHistorical)}
-        onClick={() => api.startScan().catch((err: Error) => onError(err.message))}
+        onClick={() => api.startScan().catch((err: unknown) => onError(errorText(err)))}
       >
         Scan all drives
       </button>
@@ -894,7 +1019,7 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
         <button
           disabled={deleting}
           title="Reuses unchanged Mac folders. The first quick scan builds a baseline; other drives receive a full scan. Use Scan all drives to read every folder again."
-          onClick={() => api.startScan('incremental').catch((err: Error) => onError(err.message))}
+          onClick={() => api.startScan('incremental').catch((err: unknown) => onError(errorText(err)))}
         >
           Quick scan (experimental)
         </button>

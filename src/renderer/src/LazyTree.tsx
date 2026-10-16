@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode, type MouseEvent } from 'react'
 import type { NodeKind } from '../../shared/types'
 import { openRowContext } from './rowContext'
+import { errorText } from './bulkQueue'
 
 const PAGE = 200
 
@@ -25,6 +26,11 @@ export function LazyTree<Row extends { kind: NodeKind }>(props: LazyTreeProps<Ro
   )
 }
 
+/** Children of one node inside another tree, such as an expanded Space filter match. */
+export function LazyChildren<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { depth: number }) {
+  return <Branch key={props.reloadKey} {...props} nodeId={props.rootId} />
+}
+
 function Branch<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { nodeId: number; depth: number }) {
   const { load, nodeId } = props
   const prepared = props.depth === 0 ? props.rootRows : undefined
@@ -42,7 +48,7 @@ function Branch<Row extends { kind: NodeKind }>(props: LazyTreeProps<Row> & { no
     let live = true
     load(nodeId).then(
       (loaded) => live && setRows(loaded),
-      (err: Error) => live && setError(err.message),
+      (err: unknown) => live && setError(errorText(err)),
     )
     return () => {
       live = false

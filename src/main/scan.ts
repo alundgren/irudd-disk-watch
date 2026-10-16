@@ -11,7 +11,7 @@ import {
   count,
   type ScanLine,
 } from '../shared/workerProtocol.ts'
-import { workerFrames, workerOperation, type WorkerConnection } from './worker.ts'
+import { workerFrames, workerOperation, WorkerRequestNotSent, type WorkerConnection } from './worker.ts'
 import { containsPath, pathKey } from '../shared/paths.ts'
 import type {
   DeleteFailure,
@@ -68,6 +68,8 @@ class Ingest {
   private readonly scanId: number
   private readonly rootNode: number
   private readonly native: boolean
+  /** Whether this worker reports read errors per directory. Known once the root arrives. */
+  private errorsByDirectory = false
 
   constructor(store: Store, scanId: number, rootNode: number, native = false) {
     this.native = native
@@ -81,7 +83,7 @@ class Ingest {
     )
     this.insertEntry = db.prepare(
       native
-        ? `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at, native_identity) VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ? `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at, native_identity, subtree_errors) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         : `INSERT INTO entry (scan_id, node_id, size, files, created_at, last_written_at) VALUES (?, ?, ?, ?, ?, ?)`,
     )
     this.insertError = db.prepare(`INSERT INTO scan_error (scan_id, path, message) VALUES (?, ?, ?)`)
@@ -120,9 +122,15 @@ class Ingest {
     return node
   }
 
-  private entry(nodeId: number, size: number, files: number, times: ScannerTimes = {}): void {
+  private entry(
+    nodeId: number,
+    size: number,
+    files: number,
+    times: ScannerTimes = {},
+    errors: number | null = null,
+  ): void {
     const values = [this.scanId, nodeId, size, files, times.createdAt ?? null, times.lastWrittenAt ?? null]
-    if (this.native) this.insertEntry.run(...values, times.identity ? JSON.stringify(times.identity) : null)
+    if (this.native) this.insertEntry.run(...values, times.identity ? JSON.stringify(times.identity) : null, errors)
     else this.insertEntry.run(...values)
     this.rows++
   }
@@ -138,11 +146,19 @@ class Ingest {
             ? this.rootNode
             : this.intern(this.parentNode(line.parent), 'dir', line.name, line.nameBytes)
         this.scannerToNode.set(line.id, node)
-        this.entry(node, line.size, line.files, line)
+        if (line.parent === null) this.errorsByDirectory = line.errors !== undefined
+        this.entry(node, line.size, line.files, line, line.errors ?? null)
         return
       }
       case 'file':
-        this.entry(this.intern(this.parentNode(line.parent), 'file', line.name, line.nameBytes), line.size, 1, line)
+        // A captured file was read in full, so nothing unreadable lies at or under it.
+        this.entry(
+          this.intern(this.parentNode(line.parent), 'file', line.name, line.nameBytes),
+          line.size,
+          1,
+          line,
+          this.errorsByDirectory ? 0 : null,
+        )
         return
       case 'rest':
         this.entry(this.intern(this.parentNode(line.parent), 'rest', ''), line.size, line.files)
@@ -457,6 +473,11 @@ export async function executeNativeDelete(
     store.updateDeleteOperation(operationId, result.state!, receipt)
     return { ...result, machineName: disk.machine.name }
   } catch (error) {
+    // The worker never saw the request, so there is no outcome to check later.
+    if (error instanceof WorkerRequestNotSent) {
+      store.discardUnsentDeleteOperation(operationId)
+      throw new Error(error.message)
+    }
     store.updateDeleteOperation(operationId, 'unknown')
     throw new Error(
       `Deletion ${operationId} has an uncertain outcome. Check status before any new action. ${error instanceof Error ? error.message : String(error)}`,

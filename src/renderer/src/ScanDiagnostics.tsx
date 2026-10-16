@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ScanIssues, ScanSummary } from '../../shared/types'
 import { api, formatCount } from './api'
+import { errorText } from './bulkQueue'
 
 export function ScanDiagnostics({
   scan,
@@ -35,8 +36,7 @@ export function ScanDiagnostics({
       const result = await api.scanIssues(scan.id)
       if (active.current && identity === request.current) setIssues(result)
     } catch (error) {
-      if (active.current && identity === request.current)
-        setError(error instanceof Error ? error.message : String(error))
+      if (active.current && identity === request.current) setError(errorText(error))
     } finally {
       if (active.current && identity === request.current) setLoading(false)
     }
@@ -52,7 +52,7 @@ export function ScanDiagnostics({
                   ? 'No accessible file data was captured. This partial scan does not show that the drive is empty.'
                   : 'This scan has partial coverage. Captured sizes may be incomplete.'}{' '}
                 {unix
-                  ? 'Changes and cleanup require a scan with complete coverage.'
+                  ? 'Changes requires a scan with complete coverage. Cleanup is limited to items with nothing unreadable inside them.'
                   : 'Changes requires a scan with complete coverage.'}
               </>
             ) : (

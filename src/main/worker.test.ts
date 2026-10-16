@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, expect, test as platformTest } from 'vite-plus/test'
-import { sshArguments, workerOperation } from './worker'
+import { LINUX_WORKER_UPDATE, sshArguments, workerOperation, WorkerRequestNotSent } from './worker'
 
 const test = process.platform === 'win32' ? platformTest.skip : platformTest
 const owned: string[] = []
@@ -18,10 +18,12 @@ function connection(mode: string) {
     scannerExe,
     `#!${process.execPath}
 import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
 const mode = ${JSON.stringify(mode)};
-const worker = {id:'fixture-worker',account:'fixture-account',os:'linux',version:1,capabilities:{scan:true,delete:true}};
+const worker = {id:'fixture-worker',account:'fixture-account',os:'linux',version:1,capabilities:mode === 'old-linux' ? {scan:true,delete:true} : {scan:true,delete:true,linuxPathTrust:true}};
 createInterface({input:process.stdin}).once('line', (line) => {
  const request = JSON.parse(line);
+ appendFileSync(${JSON.stringify(join(directory, 'received'))}, request.op + '\\n');
  const send = (record) => process.stdout.write(JSON.stringify(record)+'\\n');
  if (mode !== 'no-hello') send({t:'hello',v:1,requestId:mode === 'wrong-request' ? 'different' : request.requestId,worker:{...worker,id:mode === 'changed-worker' ? 'changed' : worker.id}});
  if (mode === 'oversized') process.stdout.write('x'.repeat(4*1024*1024+1));
@@ -57,6 +59,25 @@ test('transport requires a matching handshake, bounded complete frames, one term
     'failed-exit',
   ])
     await expect(workerOperation(connection(mode), 'hello')).rejects.toThrow()
+})
+
+test('a Linux worker without per-folder trust checks asks for an update before cleanup', async () => {
+  for (const [op, parameters] of [
+    ['cleanup', { enabled: true }],
+    ['delete', {}],
+  ] as const) {
+    const old = connection('old-linux')
+    const failure = workerOperation(old, op, parameters)
+    await expect(failure).rejects.toThrow(LINUX_WORKER_UPDATE)
+    // Typed so a caller that recorded the request first knows nothing was sent.
+    await expect(failure).rejects.toBeInstanceOf(WorkerRequestNotSent)
+    // Only the capability probe reached the worker; the cleanup request was never sent.
+    expect(readFileSync(join(dirname(old.scannerExe), 'received'), 'utf8')).toBe('hello\n')
+  }
+  // Turning cleanup off and other operations keep working with the older worker.
+  await expect(workerOperation(connection('old-linux'), 'cleanup', { enabled: false })).resolves.toBeTruthy()
+  await expect(workerOperation(connection('old-linux'), 'inspect')).resolves.toBeTruthy()
+  await expect(workerOperation(connection('valid'), 'cleanup', { enabled: true })).resolves.toBeTruthy()
 })
 
 platformTest('SSH destination cannot supply shell or SSH options and the command is fixed', () => {
