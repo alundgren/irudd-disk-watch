@@ -372,7 +372,7 @@ main {
 
 .space-columns,
 .space-columns ~ .tree .tree-row {
-  grid-template-columns: minmax(0, 46fr) minmax(0, 20fr) minmax(0, 12fr) minmax(0, 22fr);
+  grid-template-columns: minmax(0, 38fr) minmax(0, 22fr) minmax(0, 16fr) minmax(0, 24fr);
   min-width: 620px;
 }
 
