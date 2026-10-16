@@ -273,9 +273,12 @@ const MatchRow = memo(function MatchRow({
           )}
           <span className={`name kind-${row.kind}${staged ? ' staged-row' : ''}`}>
             <NodeIcon kind={row.kind === 'dir' ? 'dir' : 'file'} />
-            <span className="node-name">
-              <span className="match-parent">{row.path.slice(0, split)}</span>
-              {row.name}
+            {/* The parent folder gives way first, from its start, so the matched name stays readable. */}
+            <span className="node-name match-name">
+              <span className="match-parent">
+                <bdi dir="ltr">{row.path.slice(0, split)}</bdi>
+              </span>
+              <span className="match-leaf">{row.name}</span>
             </span>
             {staged && <span className="tag staged">queued</span>}
           </span>

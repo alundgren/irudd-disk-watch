@@ -61,7 +61,9 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
             {outcome.queued ? `Queued ${items(outcome.queued)} for deletion` : 'Nothing was queued'}
           </h2>
           {outcome.stopped && <p role="alert">{outcome.stopped}</p>}
-          <p className="muted">Review the queue above the tabs, then use Execute delete when you are ready.</p>
+          {outcome.queued > 0 && (
+            <p className="muted">Review the queue above the tabs, then use Execute delete when you are ready.</p>
+          )}
         </>
       ) : (
         <>

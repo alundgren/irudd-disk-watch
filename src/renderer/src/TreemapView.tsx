@@ -5,6 +5,7 @@ import { openRowContext } from './rowContext'
 import { ScanPicker } from './ScanPicker'
 import { ScanDiagnostics } from './ScanDiagnostics'
 import { mapEntries, treemap, type MapEntry, type Rectangle } from './treemap'
+import { errorText } from './bulkQueue'
 
 interface Props {
   disk: Disk
@@ -127,8 +128,7 @@ export function TreemapView({ disk, scans, scanId, rows, total, staged, onPick, 
       ])
       setDetail(null)
     } catch (err) {
-      if (identity === request.current)
-        setError({ message: err instanceof Error ? err.message : String(err), entry, parent })
+      if (identity === request.current) setError({ message: errorText(err), entry, parent })
     } finally {
       if (identity === request.current) setLoading(false)
     }

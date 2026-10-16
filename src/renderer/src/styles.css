@@ -372,7 +372,7 @@ main {
 
 .space-columns,
 .space-columns ~ .tree .tree-row {
-  grid-template-columns: minmax(0, 38fr) minmax(0, 22fr) minmax(0, 16fr) minmax(0, 24fr);
+  grid-template-columns: minmax(0, 46fr) minmax(0, 20fr) minmax(0, 12fr) minmax(0, 22fr);
   min-width: 620px;
 }
 
@@ -828,11 +828,18 @@ button.link:hover {
   min-width: 200px;
   font-size: 13.5px;
 }
+/* The action label is faded so it reads as unavailable; the reason under it keeps full contrast. */
 .context-menu .menu-unavailable {
-  color: var(--muted);
-  cursor: default;
+  color: #a39486;
+  cursor: not-allowed;
   display: flex;
   flex-direction: column;
+}
+.context-menu .menu-unavailable:hover {
+  background: transparent;
+}
+.context-menu .menu-unavailable .small {
+  color: var(--muted);
 }
 
 @media (max-width: 1100px) {
@@ -1461,9 +1468,32 @@ button.map-hit:focus-visible {
   background: var(--raised);
   box-shadow: inset 3px 0 0 var(--accent);
 }
+.match-row .tree-name > .name {
+  flex: 1;
+}
+.match-name {
+  display: flex;
+  min-width: 0;
+}
+/* Right-to-left direction moves the ellipsis to the start of the parent path. */
 .match-parent {
   color: var(--muted);
   font-weight: 400;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.match-leaf {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
 }
 .chevron-button {
   padding: 0;

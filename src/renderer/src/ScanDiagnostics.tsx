@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ScanIssues, ScanSummary } from '../../shared/types'
 import { api, formatCount } from './api'
+import { errorText } from './bulkQueue'
 
 export function ScanDiagnostics({
   scan,
@@ -35,8 +36,7 @@ export function ScanDiagnostics({
       const result = await api.scanIssues(scan.id)
       if (active.current && identity === request.current) setIssues(result)
     } catch (error) {
-      if (active.current && identity === request.current)
-        setError(error instanceof Error ? error.message : String(error))
+      if (active.current && identity === request.current) setError(errorText(error))
     } finally {
       if (active.current && identity === request.current) setLoading(false)
     }
