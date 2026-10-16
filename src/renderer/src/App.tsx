@@ -8,6 +8,7 @@ import type {
   HideChange,
   HideSettings,
   NodeKind,
+  SearchRow,
   ScanProgress,
   StagedDelete,
   TreeRow,
@@ -22,6 +23,7 @@ import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
 import { VolumeChooser } from './VolumeChooser'
 import { sameTarget, containsTarget, summarizeStaged, verifiedScanTime } from './deleteQueue'
+import { errorText, LIMIT_REASON, QUEUE_LIMIT, type BulkOutcome, type SkippedItem } from './bulkQueue'
 
 type Tab = 'space' | 'treemap' | 'changes' | 'settings'
 interface Intent {
@@ -76,6 +78,8 @@ export function App() {
   const [deleteFailure, setDeleteFailure] = useState<DeleteResult | null>(null)
   const [elevated, setElevated] = useState(true)
   const [stagedByDisk, setStagedByDisk] = useState<Record<number, StagedDelete[]>>({})
+  const stagedRef = useRef(stagedByDisk)
+  stagedRef.current = stagedByDisk
   const [deletingDisk, setDeletingDisk] = useState<number | null>(null)
   const deleting = deletingDisk !== null
   const deletingRef = useRef(false)
@@ -276,6 +280,74 @@ export function App() {
     } finally {
       if (staging.current.get(key) === action) staging.current.delete(key)
     }
+  }
+  const queueBlocked = (diskId: number): string | null => {
+    const owner = disks.find((disk) => disk.id === diskId)
+    if (!owner) return 'This root is no longer tracked.'
+    if (isHistorical(owner)) return 'Saved history cannot delete files.'
+    if (!canCleanup(owner)) return 'Deletion is off for this root. Turn it on in Settings.'
+    if (!isWindows(owner) && needsRecovery(diskId))
+      return 'An earlier deletion needs a status check and a fresh scan first.'
+    if (deleting || deletingRef.current) return 'A deletion is running.'
+    return null
+  }
+  /**
+   * Adds staged targets without removing anything already queued, a few requests at a time.
+   * Navigation, Clear and Execute delete cancel the remaining requests, as for single items.
+   */
+  const queueMany = async (
+    diskId: number,
+    rows: SearchRow[],
+    signal: AbortSignal,
+    onProgress: (done: number) => void,
+  ): Promise<BulkOutcome> => {
+    const blocked = queueBlocked(diskId)
+    if (blocked)
+      return { queued: 0, skipped: rows.map((row) => ({ nodeId: row.nodeId, path: row.path, reason: blocked })) }
+    const key = `${diskId}:bulk`
+    const action = Symbol()
+    staging.current.set(key, action)
+    const live = () => staging.current.get(key) === action && !deletingRef.current && !signal.aborted
+    let list = [...(stagedRef.current[diskId] ?? [])]
+    const skipped: SkippedItem[] = []
+    const pending = [...rows]
+    let queued = 0
+    let done = 0
+    const next = async () => {
+      for (let row = pending.shift(); row; row = pending.shift()) {
+        const skip = (reason: string) => skipped.push({ nodeId: row!.nodeId, path: row!.path, reason })
+        if (!live()) {
+          skip('Stopped before this item was queued.')
+          continue
+        }
+        try {
+          const target = await api.stageDelete(diskId, row.nodeId)
+          const holder = list.find((entry) => containsTarget(entry, target))
+          if (!live()) skip('Stopped before this item was queued.')
+          else if (holder)
+            skip(sameTarget(holder, target) ? 'Already queued.' : `Already queued inside ${holder.path}.`)
+          else if (summarizeStaged([...list, target]).top.length > QUEUE_LIMIT) skip(LIMIT_REASON)
+          else {
+            list = [...list, target]
+            queued++
+            setStagedByDisk((current) => {
+              const items = current[diskId] ?? []
+              if (items.some((entry) => sameTarget(entry, target))) return current
+              return { ...current, [diskId]: [...items, target] }
+            })
+          }
+        } catch (error) {
+          skip(errorText(error))
+        }
+        onProgress(++done)
+      }
+    }
+    try {
+      await Promise.all([next(), next(), next(), next()])
+    } finally {
+      if (staging.current.get(key) === action) staging.current.delete(key)
+    }
+    return { queued, skipped }
   }
   const removeStaged = (diskId: number, target: StagedDelete) => {
     cancelStaging(diskId)
@@ -686,6 +758,9 @@ export function App() {
               <p className="empty">No scans yet. Use Scan all drives to see what takes up the space.</p>
             ) : page.tab === 'space' ? (
               <SpaceView
+                key={page.disk.id}
+                queueBlocked={queueBlocked(page.disk.id)}
+                onQueueMany={(rows, signal, onProgress) => queueMany(page.disk.id, rows, signal, onProgress)}
                 disk={page.disk}
                 scans={complete}
                 scanId={page.scanId!}
