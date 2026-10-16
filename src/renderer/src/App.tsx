@@ -289,6 +289,7 @@ export function App() {
     if (!owner) return 'This root is no longer tracked.'
     if (isHistorical(owner)) return 'Saved history cannot delete files.'
     if (!canCleanup(owner)) return 'Deletion is off for this root. Turn it on in Settings.'
+    if (!isWindows(owner) && operations[diskId] === undefined) return 'Checking earlier deletions…'
     if (!isWindows(owner) && needsRecovery(diskId))
       return 'An earlier deletion needs a status check and a fresh scan first.'
     if (deleting || deletingRef.current) return 'A deletion is running.'
@@ -909,6 +910,16 @@ export function App() {
               <button role="menuitem" aria-disabled="true" className="menu-unavailable">
                 Queue for deletion
                 <span className="small">Turn on deletion in Settings</span>
+              </button>
+            )}
+          {menu.target.canDelete &&
+            menu.target.kind &&
+            canCleanup(menu.owner.page.disk) &&
+            !isWindows(menu.owner.page.disk) &&
+            needsRecovery(menu.owner.diskId) && (
+              <button role="menuitem" aria-disabled="true" className="menu-unavailable">
+                Queue for deletion
+                <span className="small">{queueBlocked(menu.owner.diskId)}</span>
               </button>
             )}
         </div>

@@ -103,8 +103,8 @@ export function BulkQueueDialog({ plan, onQueue, onClose }: BulkQueueDialogProps
       )}
       {!outcome && plan.queue.length > 0 && (
         <p className="muted small">
-          After the delete runs, scan this root again before queueing more items. Saved scans do not change when files
-          are removed.
+          Saved scans do not change when files are removed. After the delete runs, scan again to see current contents
+          before queueing more.
         </p>
       )}
       <div className="dialog-actions">

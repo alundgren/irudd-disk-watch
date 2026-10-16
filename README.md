@@ -78,16 +78,7 @@ install -d -m 700 "$HOME/.local/share/disk-watch"
 install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
 ```
 
-To update the Linux worker, for example when the app says it is out of date, rebuild it from an up-to-date checkout of this repository on that Linux account and replace the executable:
-
-```sh
-cargo build --release --locked --manifest-path scanner/Cargo.toml
-install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
-```
-
-The installation ID, cleanup settings and deletion receipts live in the worker's separate state directory, so the app still recognizes the machine after the update. If the old worker refused to turn on deletion, turn it on again in Settings.
-
-Inspect existing destination ownership and preserve an existing worker before replacing it. Then enter an SSH configuration alias or `user@host` and an absolute remote root in Track over SSH. The app uses the fixed worker command, disables forwarding and SSH connection sharing, and records worker/account identity. An alias pointing to a different machine is refused. No remote daemon or Go runtime is needed.
+If a worker is already installed there, check who owns `$HOME/.local/share/disk-watch` and follow [Update the Linux worker](#update-the-linux-worker) instead, which keeps a backup of the current worker. Then enter an SSH configuration alias or `user@host` and an absolute remote root in Track over SSH. The app uses the fixed worker command, disables forwarding and SSH connection sharing, and records worker/account identity. An alias pointing to a different machine is refused. No remote daemon or Go runtime is needed.
 
 Unix cleanup starts disabled and supports APFS and ext4 only. Enable it only after stopping writers. On a Mac the tracked root must be owned by you and closed to other users. On Linux any folder can be tracked, including `/`. Each folder on the way to a queued item must belong to you or root and must not be changeable by other users (sticky shared folders such as `/tmp` are fine), and queued folders and everything in them must belong to you. While cleanup is off, the context menu shows Queue for deletion as unavailable, with the reason. Native guards reject symlink ancestors, changed object identities and mount crossings, but Unix does not provide an atomic identity-check-and-unlink operation. Concurrent hostile writers are outside the supported cleanup contract. Interrupted deletions are checked by operation ID; they are never automatically repeated. After a reboot, remount, or deliberate root replacement, use Reinspect root in Settings. It preserves saved history, clears staged targets and disables cleanup until you scan again and opt in. Changes refuses snapshots from different root identities. See [native behavior and limitations](scanner/README.md).
 
@@ -111,6 +102,18 @@ Other scripts:
 Use `vp run build` and `vp run dev` for this Electron app. These scripts run `electron-vite` with Vite 7, the version supported by stable electron-vite. Vite+ uses its own Vite core for the test runner. `vp build` and `vp dev` directly start Vite+'s web tooling, so use the project scripts instead.
 
 If you start the app from a terminal inside another Electron app, unset `ELECTRON_RUN_AS_NODE` first. With that variable set, Electron starts as plain Node and fails with `does not provide an export named 'BrowserWindow'`.
+
+### Update the Linux worker
+
+Do this when the app says the Linux worker is out of date. On the Linux account, from an up-to-date checkout of this repository, keep a timestamped copy of the current worker, then build and replace it:
+
+```sh
+cargo build --release --locked --manifest-path scanner/Cargo.toml
+cp -p "$HOME/.local/share/disk-watch/worker-v1" "$HOME/.local/share/disk-watch/worker-v1.$(date +%Y%m%d-%H%M%S).bak"
+install -m 700 scanner/target/release/dw-scan "$HOME/.local/share/disk-watch/worker-v1"
+```
+
+To go back, copy the `.bak` file over `worker-v1`. The installation ID, cleanup settings and deletion receipts live in the worker's separate state directory, so the app still recognizes the machine after the update. If the old worker refused to turn on deletion, turn it on again in Settings.
 
 ## How it works
 

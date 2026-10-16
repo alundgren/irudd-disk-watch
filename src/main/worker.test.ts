@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, test as platformTest } from 'vite-plus/test'
-import { LINUX_WORKER_UPDATE, sshArguments, workerOperation } from './worker'
+import { LINUX_WORKER_UPDATE, sshArguments, workerOperation, WorkerRequestNotSent } from './worker'
 
 const test = process.platform === 'win32' ? platformTest.skip : platformTest
 const owned: string[] = []
@@ -67,7 +67,10 @@ test('a Linux worker without per-folder trust checks asks for an update before c
     ['delete', {}],
   ] as const) {
     const old = connection('old-linux')
-    await expect(workerOperation(old, op, parameters)).rejects.toThrow(LINUX_WORKER_UPDATE)
+    const failure = workerOperation(old, op, parameters)
+    await expect(failure).rejects.toThrow(LINUX_WORKER_UPDATE)
+    // Typed so a caller that recorded the request first knows nothing was sent.
+    await expect(failure).rejects.toBeInstanceOf(WorkerRequestNotSent)
     // Only the capability probe reached the worker; the cleanup request was never sent.
     expect(readFileSync(join(dirname(old.scannerExe), 'received'), 'utf8')).toBe('hello\n')
   }
