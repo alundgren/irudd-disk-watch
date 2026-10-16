@@ -700,19 +700,57 @@ test('filesystem changes require explicit native refresh and separate Changes hi
   store.db.close()
 })
 
-test('partial native coverage refuses cleanup staging while Windows staging remains unchanged', () => {
+test('partial native coverage stages only targets known to have no unreadable items, Windows unchanged', () => {
   const { store, disk } = nativeFixture()
   const parent = store.internNode(disk.rootNode, 'dir', 'nested', encoded('nested'))
   const file = store.internNode(parent, 'file', 'file', encoded('file'))
+  const folder = store.internNode(parent, 'dir', 'folder', encoded('folder'))
   const scan = nativeScan(store, disk.id, disk.rootNode, file, 1)
+  store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,0,0)').run(scan, folder)
+  store.setEntryIdentity(scan, folder, { device: '1', inode: '4' })
+  const errorsAt = (node: number, errors: number | null) =>
+    store.db.prepare('UPDATE entry SET subtree_errors=? WHERE scan_id=? AND node_id=?').run(errors, scan, node)
   store.setCleanupEnabled(disk.id, true)
   store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(scan)
-  expect(() => store.stageDelete(disk.id, file)).toThrow(/complete-coverage native scan is required/)
+  // Scans from workers that predate per-folder error counts cannot show that a target was fully read.
+  expect(() => store.stageDelete(disk.id, file)).toThrow(/does not record where.*Update the worker and scan again/)
+  errorsAt(file, 0)
+  expect(store.stageDelete(disk.id, file)).toMatchObject({ scanId: scan, partialScan: true })
+  errorsAt(folder, 1)
+  expect(() => store.stageDelete(disk.id, folder)).toThrow(/^1 item at or under this path could not be read/)
+  errorsAt(folder, 8920)
+  expect(() => store.stageDelete(disk.id, folder)).toThrow(/^8,920 items at or under this path could not be read/)
+  errorsAt(folder, 0)
+  expect(store.stageDelete(disk.id, folder)).toMatchObject({ kind: 'dir', partialScan: true })
   store.db.prepare("UPDATE scan SET coverage='complete' WHERE id=?").run(scan)
-  expect(store.stageDelete(disk.id, file).scanId).toBe(scan)
+  errorsAt(file, null)
+  const complete = store.stageDelete(disk.id, file)
+  expect(complete.scanId).toBe(scan)
+  expect(complete).not.toHaveProperty('partialScan')
   store.db.close()
   const windows = fixture()
   windows.store.db.prepare("UPDATE scan SET coverage='partial' WHERE id=?").run(windows.after)
   expect(windows.store.stageDelete(windows.disk.id, windows.cache).scanId).toBe(windows.after)
   windows.store.db.close()
+})
+
+test('version five history gains unknown per-entry read error counts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-store-'))
+  const file = join(dir, 'history.db')
+  try {
+    const store = new Store(openDb(file))
+    const disk = store.addDisk('C:\\')
+    const scan = store.beginScan(disk.id, [])
+    store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,1,1)').run(scan, disk.rootNode)
+    store.db.exec('ALTER TABLE entry DROP COLUMN subtree_errors; PRAGMA user_version=5')
+    store.db.close()
+    const upgraded = new Store(openDb(file))
+    expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })
+    expect(upgraded.db.prepare('SELECT subtree_errors FROM entry WHERE scan_id=?').get(scan)).toEqual({
+      subtree_errors: null,
+    })
+    upgraded.db.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

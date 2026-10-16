@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test'
-import type { StagedDelete } from '../../shared/types'
-import { containsTarget, sameTarget, summarizeStaged } from './deleteQueue'
+import type { ScanSummary, StagedDelete } from '../../shared/types'
+import { containsTarget, sameTarget, summarizeStaged, verifiedScanTime } from './deleteQueue'
 
 const target = (path: string, components?: string[], machineId = 'test-machine'): StagedDelete => ({
   nodeId: 1,
@@ -44,5 +44,26 @@ describe('deletion queue identity', () => {
     expect(containsTarget(parent, sibling)).toBe(false)
     expect(sameTarget(parent, target('c:\\DOWNLOADS\\cache'))).toBe(true)
     expect(summarizeStaged([child, parent, sibling]).top).toEqual([parent, sibling])
+  })
+})
+
+describe('partial scans and deletion follow-up', () => {
+  const scan = (id: number, startedAt: number, status: ScanSummary['status'], coverage: ScanSummary['coverage']) =>
+    ({ id, diskId: 1, startedAt, status, coverage }) as ScanSummary
+
+  it('lets a newer partial scan end the wait after a deletion, but not a failed one', () => {
+    const scans = [
+      scan(3, 300, 'failed', 'complete'),
+      scan(2, 200, 'complete', 'partial'),
+      scan(1, 100, 'complete', 'complete'),
+    ]
+    expect(verifiedScanTime(scans)).toBe(200)
+    expect(verifiedScanTime([])).toBe(0)
+  })
+
+  it('marks the summary when any top-level item came from a partial scan', () => {
+    const partial = { ...target('/root/a', ['YQ==']), partialScan: true }
+    expect(summarizeStaged([target('/root/b', ['Yg=='])]).partial).toBe(false)
+    expect(summarizeStaged([partial, target('/root/b', ['Yg=='])]).partial).toBe(true)
   })
 })

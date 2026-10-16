@@ -607,6 +607,11 @@ struct Node {
     #[cfg_attr(target_os = "macos", serde(skip))]
     dirs: Vec<Node>,
     big: Vec<Node>,
+    /// Read errors at or under this directory. Cleanup from a partial scan needs
+    /// this to be zero. Quick scans reuse only error-free folders, so cached nodes
+    /// do not store it.
+    #[cfg_attr(target_os = "macos", serde(skip))]
+    errors: u64,
     #[cfg(target_os = "macos")]
     stats: macos_incremental::Counts,
 }
@@ -684,7 +689,13 @@ impl Scan<'_> {
                 return Ok(previous.unwrap());
             }
         }
-        let result = self.read_directory(dir, name, parts, previous);
+        let errors = self.errors;
+        let result = self
+            .read_directory(dir, name, parts, previous)
+            .map(|mut node| {
+                node.errors = self.errors - errors;
+                node
+            });
         #[cfg(target_os = "macos")]
         let result = result.map(|mut node| {
             node.stats = macos_incremental::Counts::capture(self).difference(before);
@@ -733,6 +744,7 @@ impl Scan<'_> {
             rest_files: 0,
             dirs: Vec::new(),
             big: Vec::new(),
+            errors: 0,
             #[cfg(target_os = "macos")]
             stats: macos_incremental::Counts::default(),
         };
@@ -835,6 +847,7 @@ impl Scan<'_> {
                     rest_files: 0,
                     dirs: Vec::new(),
                     big: Vec::new(),
+                    errors: 0,
                     #[cfg(target_os = "macos")]
                     stats: macos_incremental::Counts::default(),
                 }))
@@ -881,7 +894,7 @@ fn emit_node(node: &Node, parent: Option<u64>, next: &mut u64, control: &Control
     control.check()?;
     let id = *next;
     *next += 1;
-    let mut record = json!({"t":"dir","id":id,"parent":parent,"name":label(&node.name),"identity":node.identity,"size":node.size,"files":node.files,"createdAt":node.times.created_at,"lastWrittenAt":node.times.last_written_at});
+    let mut record = json!({"t":"dir","id":id,"parent":parent,"name":label(&node.name),"identity":node.identity,"size":node.size,"files":node.files,"errors":node.errors,"createdAt":node.times.created_at,"lastWrittenAt":node.times.last_written_at});
     if parent.is_some() {
         record["nameBytes"] = json!(B64.encode(&node.name));
     }
@@ -2213,6 +2226,65 @@ mod tests {
         assert_eq!(tree.size, 0);
         assert_eq!(scan.errors, 1);
         assert_eq!(scan.special + scan.symlinks + scan.mounts, 0);
+    }
+    #[test]
+    fn read_errors_count_in_every_containing_directory_only() {
+        let fixture = Fixture::new();
+        let root = fixture.dir("root");
+        fixture.dir("root/a/b");
+        fixture.dir("root/a/clean");
+        fixture.dir("root/sibling");
+        fs::write(root.join("a/clean/file"), b"data").unwrap();
+        let first = fixture.dir("root/a/b/private");
+        let second = fixture.dir("root/a/private");
+        for dir in [&first, &second] {
+            fs::write(dir.join("unseen"), b"data").unwrap();
+            fs::set_permissions(dir, fs::Permissions::from_mode(0)).unwrap();
+        }
+        let file = open_root(&root).unwrap();
+        let control = Control::testing();
+        let mut scan = Scan {
+            control: &control,
+            root: &root,
+            mount: mount(&file).unwrap(),
+            device: file.metadata().unwrap().dev(),
+            excludes: vec![],
+            min: 0,
+            errors: 0,
+            symlinks: 0,
+            special: 0,
+            mounts: 0,
+            samples: Vec::new(),
+            dirs: 0,
+            count: 0,
+            bytes: 0,
+            last_progress: Instant::now(),
+            started: crate::tree::now_ms(),
+            #[cfg(target_os = "macos")]
+            dirty: None,
+            #[cfg(target_os = "macos")]
+            uncached_entries: 0,
+            #[cfg(target_os = "macos")]
+            reused_dirs: 0,
+        };
+        let tree = scan
+            .directory(&file, b"root".to_vec(), &mut Vec::new())
+            .unwrap();
+        for dir in [&first, &second] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let child = |node: &Node, name: &[u8]| -> u64 {
+            node.dirs.iter().find(|d| d.name == name).unwrap().errors
+        };
+        let a = tree.dirs.iter().find(|d| d.name == b"a").unwrap();
+        assert_eq!(scan.errors, 2);
+        assert_eq!(tree.errors, 2);
+        assert_eq!(a.errors, 2);
+        assert_eq!(child(a, b"b"), 1);
+        assert_eq!(child(a, b"clean"), 0);
+        assert_eq!(child(&tree, b"sibling"), 0);
+        // Unreadable folders are not captured, so they can never be staged themselves.
+        assert!(a.dirs.iter().all(|d| d.name != b"private"));
     }
     #[test]
     fn native_errno_survives_descriptor_open_failure() {

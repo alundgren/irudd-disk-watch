@@ -206,7 +206,9 @@ test('known native version four upgrades transactionally without replacing histo
     const scan = store.beginScan(disk.id, [])
     store.db.prepare("UPDATE scan SET status='complete',size=17,files=2 WHERE id=?").run(scan)
     store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,17,2)').run(scan, disk.rootNode)
-    store.db.exec('ALTER TABLE disk DROP COLUMN root_refresh_scan; PRAGMA user_version=4')
+    store.db.exec(
+      'ALTER TABLE disk DROP COLUMN root_refresh_scan; ALTER TABLE entry DROP COLUMN subtree_errors; PRAGMA user_version=4',
+    )
     store.db.close()
     expect(await prepareHistory(dir)).toBe(file)
     const upgraded = new Store(openDb(file))
@@ -215,7 +217,10 @@ test('known native version four upgrades transactionally without replacing histo
     expect(upgraded.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(disk.id)).toEqual({
       root_refresh_scan: 0,
     })
-    expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+    expect(upgraded.db.prepare('SELECT subtree_errors FROM entry WHERE scan_id=?').get(scan)).toEqual({
+      subtree_errors: null,
+    })
+    expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
     upgraded.db.close()
   } finally {
     rmSync(dir, { recursive: true, force: true })

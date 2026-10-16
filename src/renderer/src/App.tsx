@@ -21,7 +21,7 @@ import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
 import { VolumeChooser } from './VolumeChooser'
-import { sameTarget, containsTarget, summarizeStaged } from './deleteQueue'
+import { sameTarget, containsTarget, summarizeStaged, verifiedScanTime } from './deleteQueue'
 
 type Tab = 'space' | 'treemap' | 'changes' | 'settings'
 interface Intent {
@@ -122,13 +122,7 @@ export function App() {
           ...current,
           [next.diskId]: pending.filter((operation) => operation.state !== 'completed'),
         }))
-        setVerifiedScans((current) => ({
-          ...current,
-          [next.diskId]: Math.max(
-            0,
-            ...scans.filter((scan) => scan.coverage !== 'partial').map((scan) => scan.startedAt),
-          ),
-        }))
+        setVerifiedScans((current) => ({ ...current, [next.diskId]: verifiedScanTime(scans) }))
       }
       const revision = snapshot.disk.hides.revision
       let prepared: Page
@@ -622,7 +616,9 @@ export function App() {
                 </div>
                 <p className="muted small">
                   Permanent deletion. Estimate from the latest scan includes hidden files and uses logical sizes; actual
-                  freed space can differ.{staleQueue && ' Scan changed. Remove and restage queued items.'}
+                  freed space can differ.
+                  {stagedSummary.partial && ' Some items were queued from a partial scan, so freed space may differ.'}
+                  {staleQueue && ' Scan changed. Remove and restage queued items.'}
                 </p>
                 {showQueue && (
                   <ul className="plain-list staged-list">

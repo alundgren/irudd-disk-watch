@@ -114,7 +114,7 @@ const NTFS_METADATA: [string, NodeKind][] = [
   ['$Extend', 'dir'],
 ]
 
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 export const LEGACY_WINDOWS_MACHINE_ID = 'legacy-windows'
 
 function migrateNative(db: DatabaseSync): void {
@@ -216,6 +216,8 @@ export function openDb(file: string): DatabaseSync {
       }
       if (applied < 4) migrateNative(db)
       if (applied < 5) db.exec('ALTER TABLE disk ADD COLUMN root_refresh_scan INTEGER NOT NULL DEFAULT 0')
+      // Read errors at or under a native entry. NULL means the worker did not report it.
+      if (applied < 6) db.exec('ALTER TABLE entry ADD COLUMN subtree_errors INTEGER')
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
       if (db.prepare('PRAGMA foreign_key_check').all().length)
         throw new Error('History contains invalid ownership references.')
@@ -824,25 +826,42 @@ export class Store {
     const latest = this.latestCompleteScan(diskId)
     if (!latest) throw new Error('Scan this disk before staging deletion.')
     if (disk.targetOS !== 'windows') {
-      if (latest.coverage !== 'complete')
-        throw new Error('A complete-coverage native scan is required before staging cleanup.')
       const gate = this.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(diskId)!
       if (latest.id <= Number(gate.root_refresh_scan))
         throw new Error('Scan this root again after reinspection before staging deletion.')
     }
     const entry = this.db
       .prepare(
-        `SELECT n.kind, e.size, e.files, e.native_identity FROM node n JOIN entry e ON e.node_id = n.id WHERE n.id = ? AND e.scan_id = ?`,
+        `SELECT n.kind, e.size, e.files, e.native_identity, e.subtree_errors FROM node n JOIN entry e ON e.node_id = n.id WHERE n.id = ? AND e.scan_id = ?`,
       )
       .get(nodeId, latest.id) as
-      { kind: NodeKind; size: number; files: number; native_identity: string | null } | undefined
+      | {
+          kind: NodeKind
+          size: number
+          files: number
+          native_identity: string | null
+          subtree_errors: number | null
+        }
+      | undefined
     if (!entry || entry.kind === 'rest')
       throw new Error('This item is not in the latest scan. Scan again before staging it.')
     if (disk.targetOS !== 'windows') {
+      // A partial scan is enough only when everything at or under the target was read,
+      // so the worker deletes exactly what the scan saw there.
+      const partial = latest.coverage !== 'complete'
+      if (partial && entry.subtree_errors === null)
+        throw new Error(
+          'The latest scan has unreadable items and does not record where they are. Update the worker and scan again before staging deletion.',
+        )
+      if (partial && entry.subtree_errors! > 0)
+        throw new Error(
+          `${entry.subtree_errors === 1 ? '1 item' : `${entry.subtree_errors!.toLocaleString('en-US')} items`} at or under this path could not be read in the latest scan. Only items with nothing unreadable inside can be staged from a partial scan.`,
+        )
       const root = this.scanRoot(latest.id)
       if (!entry.native_identity || !root)
         throw new Error('This scan has no native object identity. Scan again before staging deletion.')
       return {
+        ...(partial ? { partialScan: true } : {}),
         nodeId,
         scanId: latest.id,
         path,
