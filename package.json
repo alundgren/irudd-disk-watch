@@ -1,6 +1,6 @@
 {
   "name": "disk-watch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Track where your disk space went, snapshot by snapshot.",
   "author": "Andreas Lundgren",
@@ -25,10 +25,12 @@
     "bench": "vp exec node scripts/bench.ts",
     "app": "vp run build && vp exec node scripts/start-app.mjs",
     "ready": "vp run test && vp run test:rust && vp run typecheck && vp run verify && vp run dist:win && vp run verify:packaged",
-    "dist:mac": "vp run build && vp exec node scripts/mac-icon.mjs && vp exec electron-builder --mac dir --arm64 --publish never",
+    "dist:mac": "vp run build && vp exec node scripts/mac-icon.mjs && vp run build:install-helper && vp exec electron-builder --mac dir --arm64 --publish never",
     "verify:windows": "vp run build && vp exec node scripts/verify.ts",
     "verify:packaged:windows": "vp exec node scripts/verify-packaged.mjs",
-    "test:renderer": "vp test run src/renderer"
+    "test:renderer": "vp test run src/renderer",
+    "build:install-helper": "vp exec node scripts/build-install-helper.mjs",
+    "test:installers": "vp exec node --test scripts/install-mac.check.mjs scripts/release-tools.check.mjs"
   },
   "devDependencies": {
     "@electron/osx-sign": "1.3.3",
