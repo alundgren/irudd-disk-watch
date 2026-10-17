@@ -141,3 +141,13 @@ it.skipIf(process.platform === 'win32')(
     expect(body).not.toMatch(/\bnode /)
   },
 )
+
+it('refuses to replace an app containing its custom profile', async () => {
+  const { options } = await fixture()
+  const updates = new AppUpdates({ ...options, userDataDirectory: join(options.resourcesPath, 'profile') })
+  expect(await updates.check()).toMatchObject({
+    phase: 'unmanaged',
+    message: expect.stringContaining('profile outside'),
+  })
+  expect(releases.getRelease).not.toHaveBeenCalled()
+})

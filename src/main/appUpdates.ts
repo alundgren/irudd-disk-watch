@@ -68,6 +68,21 @@ export class AppUpdates extends EventEmitter {
     this.emit('state', this.getState())
     return this.getState()
   }
+  private async assertProfileOutsideApp(target: string): Promise<void> {
+    const profile = await realpath(this.options.userDataDirectory).catch(() => resolve(this.options.userDataDirectory))
+    const installed = await realpath(target).catch(() => resolve(target))
+    const canonical = (value: string) => (this.platform === 'win32' ? value.toLowerCase() : value)
+    const paths = [
+      [profile, installed],
+      [resolve(this.options.userDataDirectory), resolve(target)],
+    ]
+    if (
+      paths.some(
+        ([data, app]) => canonical(data!) === canonical(app!) || canonical(data!).startsWith(canonical(app!) + sep),
+      )
+    )
+      throw new Error('Move the custom profile outside the installed app before updating. Your data was not changed.')
+  }
   private async managedDirectory(): Promise<string> {
     const o = this.options
     if (!o.isPackaged || !isAbsolute(o.execPath) || !isAbsolute(o.cacheDirectory) || !isAbsolute(o.userDataDirectory))
@@ -79,6 +94,7 @@ export class AppUpdates extends EventEmitter {
         throw new Error('Install Disk Watch at a stable Applications path before updating.')
       if ((await readFile(join(directory, '.disk-watch-managed'), 'utf8')).trim() !== 'com.irudd.diskwatch')
         throw new Error('Run the prebuilt installer once to enable app updates.')
+      await this.assertProfileOutsideApp(target)
       return directory
     }
     if (this.platform === 'win32' && this.arch === 'x64') {
@@ -88,6 +104,7 @@ export class AppUpdates extends EventEmitter {
         (await readFile(join(directory, '.disk-watch-managed'), 'utf8')).trim() !== 'com.irudd.diskwatch'
       )
         throw new Error('Run the prebuilt installer once to enable app updates.')
+      await this.assertProfileOutsideApp(directory)
       return directory
     }
     throw new Error('App updates support macOS ARM64 and Windows x64. Use the prebuilt installer for this computer.')

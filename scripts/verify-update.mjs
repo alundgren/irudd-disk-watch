@@ -40,6 +40,7 @@ const fixturePids = () => {
   )
 }
 let app
+let success = false
 try {
   mkdirSync(profile)
   if (mac) {
@@ -140,6 +141,7 @@ try {
   }
   assert.ok(reopened.length, `Updated app did not restart; inspect ${fixture}/cache`)
   assert.equal(readFileSync(join(profile, 'update-profile-sentinel'), 'utf8'), 'preserved')
+  success = true
   console.log('Packaged AppUpdates check/download/detached install/restart passed with a custom profile.')
 } finally {
   if (app) await app.close().catch(() => {})
@@ -149,5 +151,6 @@ try {
     } catch {}
   }
   await new Promise((finish) => setTimeout(finish, 2000))
-  if (process.env.KEEP_UPDATE_FIXTURE !== '1') rmSync(fixture, { recursive: true, force: true })
+  if (!success) console.error(`Update fixture retained for failure diagnosis: ${fixture}`)
+  if (success && process.env.KEEP_UPDATE_FIXTURE !== '1') rmSync(fixture, { recursive: true, force: true })
 }

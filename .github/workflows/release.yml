@@ -40,6 +40,7 @@ jobs:
       - name: Package Windows app and validate on hosted desktop
         if: runner.os == 'Windows'
         run: |
+          vp run verify
           vp run dist:win
           vp run verify:packaged
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-installer.ps1
