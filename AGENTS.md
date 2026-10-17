@@ -1,5 +1,5 @@
 # GitHub Actions policy
 
-Keep GitHub Actions release-only. Do not add CI workflows for pull requests, branch pushes, or scheduled validation. Do not run tests, smoke tests, GUI verification, or standalone typecheck/lint jobs in Actions, including release workflows.
+Keep GitHub Actions release-only. Do not add CI workflows for pull requests, branch pushes, or scheduled validation. Run all tests, linting, type checks, smoke tests, GUI verification and compatibility validation in the development environment, following its desktop isolation rules. Never add, enable, trigger or rerun CI validation jobs, including in release workflows.
 
-Release workflows may build and package artifacts, verify artifact integrity and compatibility, generate checksums, and publish releases. Keep any supporting build jobs in the release workflow. Run development checks locally or in an isolated test environment, following the applicable desktop isolation rules.
+Remove existing CI validation steps and any jobs or workflows left empty before pushing. Release workflows may build and package artifacts, generate checksums and publish releases. Keep supporting build jobs in the release workflow and keep development validation commands available outside Actions.

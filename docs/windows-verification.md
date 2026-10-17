@@ -138,7 +138,7 @@ Use Space, Changes, Treemap, hide/exclude editing, Undo, keyboard context menus 
 
 ## Verify packaging and installation without replacement
 
-Inspect the Windows workflow and packaging scripts at the candidate commit, then run the existing Windows GUI verification and packaged verification in the isolated session. Run `ready` only after inspecting its complete command tree and confirming every GUI step uses that session.
+Inspect the release workflow and packaging scripts at the candidate commit, then run the existing Windows GUI verification and packaged verification in the isolated session. Run `ready` only after inspecting its complete command tree and confirming every GUI step uses that session.
 
 Inside the isolated Windows session, run the candidate commands below, checking every exit. These commands launch Electron during verification. Baseline uses `vp run verify` and `vp run verify:packaged`, which are also retained aliases in the candidate.
 

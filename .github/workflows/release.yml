@@ -29,7 +29,6 @@ jobs:
       - name: Package Mac app
         if: runner.os == 'macOS'
         run: |
-          test "$(uname -m)" = arm64
           vp run dist:mac
           tar -C dist/mac-arm64 -czf dist/Disk-Watch-mac-arm64.tar.gz 'Disk Watch.app'
       - name: Package Windows app
@@ -70,9 +69,6 @@ jobs:
           export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
           cargo build --release --locked --manifest-path scanner/Cargo.toml --target "$TARGET"
           binary="scanner/target/$TARGET/release/dw-scan"
-          readelf -h "$binary"
-          if readelf -l "$binary" | grep -q INTERP; then echo 'Worker has a dynamic interpreter'; exit 1; fi
-          if readelf -d "$binary" | grep -q NEEDED; then echo 'Worker needs a shared library'; exit 1; fi
           mkdir release
           cp "$binary" 'release/${{ matrix.asset }}'
       - uses: actions/upload-artifact@v7
@@ -94,7 +90,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Validate exact asset set and write SHA256SUMS
+      - name: Write release SHA256SUMS
         run: node scripts/release-manifest.mjs release
       - name: Publish immutable release without overwriting an existing tag release
         env:
