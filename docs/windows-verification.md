@@ -158,7 +158,7 @@ If testing installer/UAC behavior, use a disposable Windows test account or VM a
 
 ## Report and cleanup
 
-Check the final integration PR's latest Windows CI results after all fixes land. A child branch check or an earlier successful run does not establish the final candidate. Report each gate as passed, failed or pending with its exact command, commit, method and evidence location. Include original Windows suite results, elevated CLI and app MFT results, baseline/candidate performance, junction/lock/read-only outcomes, import preservation, UAC profile continuity, static CRT and NSIS/package evidence. State explicitly when native memory, symbolic-link policy, GUI isolation or actual elevated execution was unavailable. Any required pending gate keeps Windows release approval pending.
+Run the Windows development checks against the final integration commit after all fixes land. A child branch check or an earlier successful run does not establish the final candidate. Report each gate as passed, failed or pending with its exact command, commit, method and evidence location. Include original Windows suite results, elevated CLI and app MFT results, baseline/candidate performance, junction/lock/read-only outcomes, import preservation, UAC profile continuity, static CRT and NSIS/package evidence. State explicitly when native memory, symbolic-link policy, GUI isolation or actual elevated execution was unavailable. Any required pending gate keeps Windows release approval pending.
 
 Review reports and screenshots for private hostnames, accounts, paths and file content before publishing. Keep raw profiles and representative measurements in the private audit directory. Remove the two worktrees through `git worktree remove` only after their test-owned processes have exited and required artifacts have been saved. Clean up only named directories and installations created by this run. The representative root and the original application/profile remain outside cleanup.
 
@@ -175,4 +175,4 @@ A completion report should include this table and link to private evidence. Do n
 | Junction, link, locked/read-only deletion fixtures and sentinels | | |
 | Copied legacy import, IDs/rules/queries, source hashes and reopen | | |
 | GUI, bundled scanner, NSIS and static CRT | | |
-| Latest final-integration Windows CI | | |
+| Final integration Windows development checks | | |
