@@ -40,14 +40,17 @@ jobs:
       - name: Package Windows app and validate on hosted desktop
         if: runner.os == 'Windows'
         run: |
-          vp run verify
           vp run dist:win
-          vp run verify:packaged
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-installer.ps1
       - name: Full packaged update and restart on isolated hosted desktop
         run: |
           vp exec node scripts/build-updater-smoke.mjs
           vp exec node scripts/verify-update.mjs
+      - name: Existing Windows GUI regression checks
+        if: runner.os == 'Windows'
+        run: |
+          vp run verify:packaged
+          vp run verify
       - uses: actions/upload-artifact@v7
         with:
           name: app-${{ runner.os }}

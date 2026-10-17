@@ -47,15 +47,15 @@ jobs:
           if (result.error) console.error(result.error)
           process.exit(result.status ?? 1)
           '@ | vp exec node
-      - run: vp run verify
       - run: vp run dist:win
-      - run: vp run verify:packaged
       - name: Clean-machine installer and rollback checks
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-installer.ps1
       - name: Full packaged update and restart on isolated hosted Windows
         run: |
           vp exec node scripts/build-updater-smoke.mjs
           vp exec node scripts/verify-update.mjs
+      - run: vp run verify:packaged
+      - run: vp run verify
       - uses: actions/upload-artifact@v7
         with:
           name: Disk-Watch-Windows-x64
