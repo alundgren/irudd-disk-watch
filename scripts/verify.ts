@@ -219,17 +219,24 @@ try {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> })
       ._invokeHandlers
     const original = handlers.get('compare')!
-    const state = globalThis as unknown as { comparisonPlan: { delay: number; reject?: boolean }[] }
+    const state = globalThis as unknown as {
+      comparisonPlan: { delay: number; reject?: boolean; hold?: boolean }[]
+      comparisonRelease?: () => void
+    }
     state.comparisonPlan = []
     ipcMain.removeHandler('compare')
     ipcMain.handle('compare', async (...args: unknown[]) => {
       const plan = state.comparisonPlan.shift()
-      if (plan) await new Promise((resolve) => setTimeout(resolve, plan.delay))
+      if (plan?.hold)
+        await new Promise<void>((resolve) => {
+          state.comparisonRelease = resolve
+        })
+      else if (plan) await new Promise((resolve) => setTimeout(resolve, plan.delay))
       if (plan?.reject) throw new Error('Fixture comparison failure')
       return original(...args)
     })
   })
-  const plan = (items: { delay: number; reject?: boolean }[]) =>
+  const plan = (items: { delay: number; reject?: boolean; hold?: boolean }[]) =>
     app.evaluate((_electron, items) => {
       ;(globalThis as unknown as { comparisonPlan: typeof items }).comparisonPlan = items
     }, items)
@@ -241,7 +248,7 @@ try {
   assert.equal(await page.getByText('Where new data landed').count(), 0, 'no partial Changes page during rejected load')
   await page.getByRole('alert').filter({ hasText: 'Fixture comparison failure' }).waitFor()
   await selected('Space')
-  await plan([{ delay: 400 }])
+  await plan([{ delay: 0, hold: true }])
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
   await selected('Space')
   assert.equal(
@@ -249,6 +256,16 @@ try {
     0,
     'summary and tree prepare before Changes becomes selected',
   )
+  await app.evaluate(async () => {
+    const state = globalThis as unknown as { comparisonRelease?: () => void }
+    const deadline = Date.now() + 10_000
+    while (!state.comparisonRelease) {
+      if (Date.now() > deadline) throw new Error('The held comparison request did not arrive.')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    state.comparisonRelease()
+    state.comparisonRelease = undefined
+  })
   await page.getByText('Where new data landed').waitFor()
   const grown = page.locator('.hotspots section').first().locator('li')
   await grown.first().waitFor()
