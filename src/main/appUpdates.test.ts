@@ -2,10 +2,15 @@ import { afterEach, expect, it, vi } from 'vite-plus/test'
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { AppUpdates, isNewerVersion, macHandoff } from './appUpdates'
 import * as releases from './releases'
 
+vi.mock('node:child_process', async (original) => ({
+  ...(await original<typeof import('node:child_process')>()),
+  spawn: vi.fn(),
+}))
 vi.mock('./releases', () => ({ getRelease: vi.fn(), downloadReleaseAsset: vi.fn() }))
 const fixtures: string[] = []
 afterEach(async () => {
@@ -151,3 +156,59 @@ it('refuses to replace an app containing its custom profile', async () => {
   })
   expect(releases.getRelease).not.toHaveBeenCalled()
 })
+
+it.skipIf(process.platform !== 'darwin')(
+  're-extracts the verified Mac archive to a fresh candidate before handoff',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'disk-watch-mac-update-'))
+    fixtures.push(root)
+    const directory = join(root, 'Applications'),
+      archiveRoot = join(root, 'archive')
+    const target = join(directory, 'Disk Watch.app'),
+      source = join(archiveRoot, 'Disk Watch.app')
+    for (const app of [target, source]) {
+      await mkdir(join(app, 'Contents/MacOS'), { recursive: true })
+      await mkdir(join(app, 'Contents/Resources'), { recursive: true })
+      await writeFile(
+        join(app, 'Contents/Info.plist'),
+        '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.irudd.diskwatch</string><key>CFBundleShortVersionString</key><string>0.3.0</string></dict></plist>',
+      )
+      await writeFile(join(app, 'Contents/MacOS/Disk Watch'), '#!/bin/sh\nexit 17\n', { mode: 0o700 })
+      await writeFile(join(app, 'Contents/Resources/install-mac.mjs'), 'fixture helper')
+      await writeFile(join(app, 'Contents/Resources/app.asar'), 'fixture archive')
+    }
+    await writeFile(join(directory, '.disk-watch-managed'), 'com.irudd.diskwatch')
+    const archive = join(root, 'update.tar.gz')
+    execFileSync('/usr/bin/tar', ['-czf', archive, '-C', archiveRoot, 'Disk Watch.app'])
+    vi.mocked(releases.getRelease).mockResolvedValue({ version: '0.3.0', assets: {} })
+    vi.mocked(releases.downloadReleaseAsset).mockResolvedValue(await readFile(archive))
+    const fakeChild = Object.assign(new EventEmitter(), { unref: vi.fn() })
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => fakeChild.emit('spawn'))
+      return fakeChild as unknown as ReturnType<typeof spawn>
+    })
+    const quit = vi.fn()
+    const updates = new AppUpdates({
+      version: '0.2.0',
+      isPackaged: true,
+      execPath: join(target, 'Contents/MacOS/Disk Watch'),
+      resourcesPath: join(target, 'Contents/Resources'),
+      cacheDirectory: join(root, 'cache'),
+      userDataDirectory: join(root, 'profile'),
+      platform: 'darwin',
+      arch: 'arm64',
+      isFilesystemBusy: () => false,
+      quit,
+    })
+    await updates.check()
+    expect((await updates.download()).phase).toBe('ready')
+    expect((await updates.installAndRestart()).phase).toBe('installing')
+    expect(quit).toHaveBeenCalledOnce()
+    expect(fakeChild.unref).toHaveBeenCalledOnce()
+    const { readdir } = await import('node:fs/promises')
+    const stage = join(root, 'cache', (await readdir(join(root, 'cache')))[0]!)
+    const handoff = await readFile(join(stage, 'update.sh'), 'utf8')
+    expect(handoff).toContain('/verified-')
+    expect(await readFile(join(stage, 'Disk Watch.app/Contents/Resources/app.asar'), 'utf8')).toBe('fixture archive')
+  },
+)
