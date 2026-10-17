@@ -10,6 +10,12 @@ export interface Machine {
   account?: string
 }
 
+export interface RemoteInstallResult {
+  version: string
+  changed: boolean
+  message: string
+}
+
 export interface WorkerInfo {
   id: string
   account: string
@@ -284,6 +290,7 @@ export type ScanEvent =
   | { type: 'run-finished' }
 
 export interface DiskWatchApi {
+  installSshScanner(destination: string): Promise<RemoteInstallResult>
   discoverVolumes(destination?: string): Promise<VolumeDiscovery & { machine: Machine }>
   addVolume(machineId: string, volume: NativeVolume): Promise<Disk>
   addFolder(machineId: string, path: string): Promise<Disk>

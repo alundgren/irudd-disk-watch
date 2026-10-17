@@ -7,6 +7,7 @@ const invoke =
     ipcRenderer.invoke(channel, ...args)
 
 const api: DiskWatchApi = {
+  installSshScanner: invoke('installSshScanner'),
   discoverVolumes: invoke('discoverVolumes'),
   addVolume: invoke('addVolume'),
   addFolder: invoke('addFolder'),

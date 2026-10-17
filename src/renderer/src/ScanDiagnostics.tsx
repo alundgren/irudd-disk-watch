@@ -48,20 +48,25 @@ export function ScanDiagnostics({
           <p>
             {partial ? (
               <>
+                Scan finished with {formatCount(scan.errors)} {scan.errors === 1 ? 'read error' : 'read errors'}.{' '}
                 {scan.size === 0
                   ? 'No accessible file data was captured. This partial scan does not show that the drive is empty.'
-                  : 'This scan has partial coverage. Captured sizes may be incomplete.'}{' '}
+                  : 'Some paths could not be read, so captured sizes may be incomplete.'}{' '}
                 {unix
                   ? 'Changes requires a scan with complete coverage. Cleanup is limited to items with nothing unreadable inside them.'
-                  : 'Changes requires a scan with complete coverage.'}
+                  : 'Changes requires a scan with complete coverage.'}{' '}
+                Open Scan details below for the saved paths and reasons. A new scan will still have partial coverage if
+                those paths remain inaccessible.
               </>
             ) : (
               'No files were captured within this mount scope. Nested mounts were intentionally skipped. Choose the drive that holds your files.'
             )}
           </p>
-          <button type="button" onClick={onChooseDrive}>
-            Choose a drive
-          </button>
+          {skippedMounts && (
+            <button type="button" onClick={onChooseDrive}>
+              Choose a drive
+            </button>
+          )}
         </div>
       )}
       <button
@@ -108,6 +113,20 @@ export function ScanDiagnostics({
           )}
           {issues && (
             <>
+              {issues.issues.some((issue) => /permission denied|operation not permitted/i.test(issue.message)) && (
+                <p>
+                  Saved samples include access restrictions. An SSH scan uses the remote account's permissions;
+                  protected system folders and other accounts' files can remain unreadable. On a Mac, review Full Disk
+                  Access in Settings. Track a folder you can read, or deliberately exclude paths you do not need, then
+                  scan again. Excluded paths are outside the recorded scan scope.
+                </p>
+              )}
+              {issues.issues.some((issue) => /timed out/i.test(issue.message)) && (
+                <p>
+                  Saved samples include filesystem timeouts. Check whether the affected storage is available, then scan
+                  again.
+                </p>
+              )}
               {issues.issues.length > 0 ? (
                 <>
                   <p className="muted small">

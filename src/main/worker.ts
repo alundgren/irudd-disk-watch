@@ -19,7 +19,7 @@ export interface WorkerConnection {
 
 /** Linux workers built before per-folder trust checks refuse most real roots, such as `/`. */
 export const LINUX_WORKER_UPDATE =
-  'The Linux worker on this machine is out of date, so deletion is unavailable. Update the worker (see "Update the Linux worker" in the README), then try again.'
+  'The Linux worker on this machine is out of date, so deletion is unavailable. Open Settings for this root, choose Install or update scanner, then scan again.'
 
 /**
  * The worker never received the request, so nothing on disk changed. Callers that record an

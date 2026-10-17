@@ -99,7 +99,7 @@ test('read-only drive rows retain selection and show actual path, filesystem and
   expect(unknown).toContain('Filesystem unavailable')
 })
 
-test('a zero-byte partial scan warns about unknown coverage and offers another drive without starting work', () => {
+test('a finished partial scan explains read failures without suggesting that changing drives fixes permissions', () => {
   const scan: ScanSummary = {
     id: 1,
     diskId: 1,
@@ -117,7 +117,9 @@ test('a zero-byte partial scan warns about unknown coverage and offers another d
   }
   const html = renderToStaticMarkup(<ScanDiagnostics scan={scan} unix onChooseDrive={() => {}} />)
   expect(html).toContain('does not show that the drive is empty')
-  expect(html).toContain('Choose a drive')
+  expect(html).toContain('Scan finished with 7 read errors')
+  expect(html).toContain('saved paths and reasons')
+  expect(html).not.toContain('Choose a drive')
   expect(html).toContain('7 items could')
   expect(html).toContain('aria-expanded="false"')
 })

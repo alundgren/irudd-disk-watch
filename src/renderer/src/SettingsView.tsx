@@ -2,6 +2,7 @@ import type { Disk, HideChange, ScanSummary } from '../../shared/types'
 import { useState } from 'react'
 import { api, formatBytes, formatCount, formatWhen, isWindows, isHistorical, machineLabel } from './api'
 import { MacDiskAccess } from './MacDiskAccess'
+import { RemoteScannerSettings } from './RemoteScannerSettings'
 
 interface SettingsViewProps {
   disk: Disk
@@ -126,6 +127,16 @@ export function SettingsView({
         )}
       </section>
       {disk.machine?.kind === 'local' && disk.machine.os === 'macos' && <MacDiskAccess />}
+      {disk.machine?.kind === 'ssh' && disk.machine.destination && (
+        <section>
+          <h2>Remote scanner</h2>
+          <RemoteScannerSettings
+            destination={disk.machine.destination}
+            disabled={busy || scanning}
+            onBusyChange={setBusy}
+          />
+        </section>
+      )}
       {!isWindows(disk) && !isHistorical(disk) && (
         <section>
           <h2>Permanent cleanup</h2>
