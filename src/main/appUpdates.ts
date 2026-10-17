@@ -214,6 +214,8 @@ export class AppUpdates extends EventEmitter {
   async installAndRestart(): Promise<UpdateState> {
     return this.action('install', async () => {
       const directory = await this.managedDirectory()
+      if (this.options.isFilesystemBusy())
+        throw new Error('Finish or cancel scans and file operations before restarting.')
       const p = this.prepared
       if (!p) throw new Error('Download and verify the update first.')
       if (digest(await readFile(p.asset)) !== p.hash) {
@@ -223,9 +225,10 @@ export class AppUpdates extends EventEmitter {
       }
       // Re-extract verified bytes so changes to the extracted runtime/helper cannot be executed.
       if (p.candidate) {
-        const { rm } = await import('node:fs/promises')
-        await rm(p.candidate, { recursive: true, force: true })
-        await exec('/usr/bin/tar', ['-xzf', p.asset, '-C', p.stage])
+        // Electron treats app.asar as a virtual directory. Use a fresh extraction instead of traversing it with fs.rm.
+        const verified = await mkdtemp(join(p.stage, 'verified-'))
+        await exec('/usr/bin/tar', ['-xzf', p.asset, '-C', verified])
+        p.candidate = join(verified, appName)
         await copyFile(join(p.candidate, 'Contents/Resources/install-mac.mjs'), join(p.stage, 'install-mac.mjs'))
       }
       const log = join(p.stage, 'update.log')
