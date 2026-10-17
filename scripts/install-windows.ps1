@@ -62,10 +62,11 @@ function Install-DiskWatch {
       $arguments = @()
       if ($ProfileDirectory) {
         if ($ProfileDirectory.Contains('"') -or $ProfileDirectory.Contains("`n") -or $ProfileDirectory.Contains("`r")) { throw 'Invalid profile path.' }
-        $quotedProfile = $ProfileDirectory -replace '(\+)$', '$1$1'
+        $quotedProfile = $ProfileDirectory -replace '(\\+)$', '$1$1'
         $arguments = @('"--user-data-dir=' + $quotedProfile + '"')
       }
-      Start-Process -FilePath $executable -ArgumentList $arguments | Out-Null
+      if ($arguments.Count) { Start-Process -FilePath $executable -ArgumentList $arguments | Out-Null }
+      else { Start-Process -FilePath $executable | Out-Null }
     }
     $changed = $false
     if ($hadPrevious) { Remove-Item -LiteralPath $backup -Recurse -Force }
