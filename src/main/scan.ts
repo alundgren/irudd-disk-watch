@@ -11,7 +11,13 @@ import {
   count,
   type ScanLine,
 } from '../shared/workerProtocol.ts'
-import { workerFrames, workerOperation, WorkerRequestNotSent, type WorkerConnection } from './worker.ts'
+import {
+  workerEnvironment,
+  workerFrames,
+  workerOperation,
+  WorkerRequestNotSent,
+  type WorkerConnection,
+} from './worker.ts'
 import { containsPath, pathKey } from '../shared/paths.ts'
 import type {
   DeleteFailure,
@@ -215,7 +221,11 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   const args = [disk.root, '--min-file-size', String(options.minFileSize)]
   if (options.method) args.push('--method', options.method)
   for (const path of excludes) args.push('--exclude', path)
-  const child = spawn(options.scannerExe, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+  const child = spawn(options.scannerExe, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: workerEnvironment(),
+  })
   const onAbort = () => child.kill()
   signal.addEventListener('abort', onAbort)
   let stderr = ''
@@ -538,6 +548,7 @@ export async function executeDelete(
     const child = spawn(scannerExe, ['--delete', '--root', root], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      env: workerEnvironment(),
     })
     let stdout = ''
     let stderr = ''

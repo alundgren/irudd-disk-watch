@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { afterEach, expect, test, vi } from 'vite-plus/test'
-import { executeDelete, executeNativeDelete } from './scan'
+import { executeDelete, executeNativeDelete, runScan } from './scan'
 import { Store, openDb } from './store'
 import { workerOperation, WorkerRequestNotSent } from './worker'
 import { DELETE_SCAN_MAX_AGE_MS } from '../shared/scanFreshness'
@@ -16,6 +16,7 @@ vi.mock('./worker', async (importOriginal) => {
 afterEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
+  vi.unstubAllEnvs()
 })
 const NOW = 10_000_000
 const encoded = (text: string) => Buffer.from(text).toString('base64')
@@ -161,6 +162,7 @@ test('expiry during native preflight rejects before sending and discards the uns
 })
 
 test('Windows rechecks freshness immediately before sending deletion paths', async () => {
+  vi.stubEnv('DISK_WATCH_GITHUB_TOKEN', 'fixture-private-release-access')
   const f = fixture('windows')
   try {
     f.scan(NOW - DELETE_SCAN_MAX_AGE_MS)
@@ -182,6 +184,46 @@ test('Windows rechecks freshness immediately before sending deletion paths', asy
     expect(end).toHaveBeenCalledOnce()
     expect(end).toHaveBeenCalledWith()
     expect(kill).toHaveBeenCalledOnce()
+    const environment = vi.mocked(spawn).mock.calls[0]![2]!.env!
+    expect(environment).toBeDefined()
+    expect(Object.keys(environment).some((key) => key.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN')).toBe(false)
+    expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('fixture-private-release-access')
+  } finally {
+    f.store.db.close()
+  }
+})
+
+test('Windows scans exclude release credentials from the child environment', async () => {
+  vi.stubEnv('DISK_WATCH_GITHUB_TOKEN', 'fixture-private-release-access')
+  const f = fixture('windows')
+  try {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(),
+      exitCode: 1,
+      signalCode: null,
+    })
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout.end()
+        child.emit('close', 1)
+      })
+      return child as unknown as ReturnType<typeof spawn>
+    })
+    const result = await runScan({
+      store: f.store,
+      scannerExe: 'must-not-run',
+      diskId: f.disk.id,
+      minFileSize: 10,
+      onProgress: () => {},
+      signal: new AbortController().signal,
+    })
+    expect(result.status).toBe('failed')
+    const environment = vi.mocked(spawn).mock.calls[0]![2]!.env!
+    expect(environment).toBeDefined()
+    expect(Object.keys(environment).some((key) => key.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN')).toBe(false)
+    expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('fixture-private-release-access')
   } finally {
     f.store.db.close()
   }
