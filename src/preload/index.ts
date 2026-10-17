@@ -20,6 +20,7 @@ const api: DiskWatchApi = {
   deleteOperations: invoke('deleteOperations'),
   recoverDelete: invoke('recoverDelete'),
   removeDisk: invoke('removeDisk'),
+  setScanIncluded: invoke('setScanIncluded'),
   pickExclude: invoke('pickExclude'),
   setExcludes: invoke('setExcludes'),
   addExclude: invoke('addExclude'),

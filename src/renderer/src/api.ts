@@ -1,3 +1,4 @@
+import { isScanFreshForDeletion } from '../../shared/scanFreshness'
 import type { Disk, DiskWatchApi, ScanSummary } from '../../shared/types'
 
 declare global {
@@ -11,6 +12,11 @@ export const api = window.diskWatch
 export const isWindows = (disk: Disk) => (disk.targetOS ?? disk.machine?.os ?? 'windows') === 'windows'
 export const isHistorical = (disk: Disk) => disk.machine?.kind === 'historical'
 export const canCleanup = (disk: Disk) => !isHistorical(disk) && (isWindows(disk) || disk.cleanupEnabled === true)
+export function cleanupScanProblem(disk: Disk, now = Date.now()): string | null {
+  return disk.latestScan?.diskId === disk.id && isScanFreshForDeletion(disk.latestScan, now)
+    ? null
+    : 'Scan this root again before deleting. Deletion requires a completed scan started within the last hour.'
+}
 export const machineLabel = (disk: Disk) => disk.machine?.name ?? 'This computer'
 
 /** Labels only. Native file operations use node IDs and encoded components. */

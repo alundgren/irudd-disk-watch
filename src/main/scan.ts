@@ -429,6 +429,7 @@ export async function executeNativeDelete(
     const fresh = store.stageDelete(diskId, target.nodeId)
     if (
       fresh.scanId !== target.scanId ||
+      fresh.diskId !== target.diskId ||
       fresh.machineId !== target.machineId ||
       fresh.kind !== target.kind ||
       fresh.path !== target.path ||
@@ -468,7 +469,9 @@ export async function executeNativeDelete(
   store.recordDeleteOperation({ operationId, diskId, payload, state: 'pending' })
   try {
     store.updateDeleteOperation(operationId, 'running')
-    const receipt = await workerOperation(connection, 'delete', payload)
+    const receipt = await workerOperation(connection, 'delete', payload, undefined, () => {
+      store.requireFreshDeleteScan(diskId, latest.id)
+    })
     const result = validateReceipt(receipt, payload, connection)
     store.updateDeleteOperation(operationId, result.state!, receipt)
     return { ...result, machineName: disk.machine.name }
@@ -508,10 +511,12 @@ export async function executeDelete(
     throw new Error('Use the identity-bound native cleanup connection for this root.')
   if (targets.length > 1000) throw new Error('Select at most 1,000 deletion targets.')
   const { root } = store.getDisk(diskId)
+  store.requireFreshDeleteScan(diskId)
   const checked = targets.map((target) => {
     const latest = store.stageDelete(diskId, target.nodeId)
     if (
       latest.scanId !== target.scanId ||
+      (target.diskId !== undefined && target.diskId !== diskId) ||
       latest.kind !== target.kind ||
       pathKey(latest.path) !== pathKey(target.path) ||
       latest.size !== target.size ||
@@ -547,7 +552,14 @@ export async function executeDelete(
       stderr = (stderr + chunk).slice(0, MAX_DIAGNOSTIC_BYTES)
     })
     child.stdin.on('error', () => {})
-    child.stdin.end(JSON.stringify(top.map(({ path, kind }) => ({ path, kind }))))
+    try {
+      store.requireFreshDeleteScan(diskId, checked[0]!.scanId)
+      child.stdin.end(JSON.stringify(top.map(({ path, kind }) => ({ path, kind }))))
+    } catch (error) {
+      child.stdin.end()
+      child.kill()
+      reject(error)
+    }
     child.once('error', reject)
     child.once('close', (code) => {
       try {

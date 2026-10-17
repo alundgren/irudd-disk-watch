@@ -173,11 +173,10 @@ async function startScan(mode: 'full' | 'incremental' = 'full') {
   if (hostOS === 'windows' && store.listDisks().some((disk) => disk.machineId === LEGACY_WINDOWS_MACHINE_ID))
     await ensureLocalMachine()
   idle()
-  const disks = store.listDisks().filter((disk) => disk.machine.kind !== 'historical')
+  const disks = store.selectedScanDisks()
   const diskIds = disks.map((disk) => disk.id)
   const first = diskIds[0]
-  if (first === undefined)
-    throw new Error('Track a local or SSH folder before scanning. Historical scans remain available.')
+  if (first === undefined) throw new Error('Select at least one live root in the sidebar before scanning.')
   const workerData: ScanWorkerData = {
     dbFile,
     scannerExe,
@@ -364,6 +363,10 @@ function registerIpc() {
   ipcMain.handle('deleteScan', (_event, scanId: number) => {
     idle()
     return store.deleteScan(scanId)
+  })
+  ipcMain.handle('setScanIncluded', (_event, diskId: number, included: boolean) => {
+    idle()
+    store.setScanIncluded(diskId, included)
   })
   ipcMain.handle('startScan', (_event, mode) => startScan(mode))
   ipcMain.handle('cancelScan', () => activeScan?.worker.postMessage('cancel'))

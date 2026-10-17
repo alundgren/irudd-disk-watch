@@ -152,6 +152,22 @@ button.danger-quiet {
   gap: 4px;
 }
 
+.disk-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.scan-checkbox {
+  flex: none;
+  margin: 11px 0 0 4px;
+}
+
+.disk-row .disk {
+  min-width: 0;
+  flex: 1;
+}
+
 .disk {
   width: 100%;
   text-align: left;

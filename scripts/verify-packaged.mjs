@@ -49,7 +49,7 @@ try {
   assert.equal(identity.icon, true)
   assert.deepEqual(identity.archive, ['out', 'package.json'])
   await page.getByText('No scans yet').waitFor()
-  await page.getByRole('button', { name: 'Scan all drives', exact: true }).click()
+  await page.getByRole('button', { name: 'Scan selected', exact: true }).click()
   await page.getByRole('treeitem', { name: /video\.mov/ }).waitFor({ timeout: 30_000 })
   const scan = await page.evaluate(async () => {
     const [disk] = await window.diskWatch.listDisks()

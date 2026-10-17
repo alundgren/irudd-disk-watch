@@ -89,3 +89,23 @@ platformTest('SSH destination cannot supply shell or SSH options and the command
   ])
   expect(sshArguments('fixture-alias')).toContain('StrictHostKeyChecking=yes')
 })
+
+test('the delete guard runs after Linux preflight and an expiry sends no delete request', async () => {
+  const valid = connection('valid')
+  let called = 0
+  const failure = workerOperation(valid, 'delete', {}, undefined, () => {
+    called++
+    expect(readFileSync(join(dirname(valid.scannerExe), 'received'), 'utf8')).toBe('hello\n')
+    throw new Error('Scan this root again before deleting.')
+  })
+  await expect(failure).rejects.toBeInstanceOf(WorkerRequestNotSent)
+  await expect(failure).rejects.toThrow(/Scan this root again/)
+  expect(called).toBe(1)
+  expect(readFileSync(join(dirname(valid.scannerExe), 'received'), 'utf8')).toBe('hello\n')
+  let allowed = 0
+  await workerOperation(valid, 'delete', {}, undefined, () => {
+    allowed++
+  })
+  expect(allowed).toBe(1)
+  expect(readFileSync(join(dirname(valid.scannerExe), 'received'), 'utf8')).toBe('hello\nhello\ndelete\n')
+})
