@@ -267,7 +267,7 @@ export class AppUpdates extends EventEmitter {
       try {
         const childEnv: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }
         for (const key of Object.keys(childEnv))
-          if (key.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN') delete childEnv[key]
+          if (['DISK_WATCH_GITHUB_TOKEN', 'PSMODULEPATH'].includes(key.toUpperCase())) delete childEnv[key]
         const child = spawn(command, args, {
           detached: true,
           stdio: 'ignore',

@@ -17,8 +17,18 @@ const name = mac ? 'Disk-Watch-mac-arm64.tar.gz' : `Disk-Watch-${version}-x64-Se
 const asset = readFileSync(resolve('dist', name))
 const executable = mac ? join(directory, 'Disk Watch.app/Contents/MacOS/Disk Watch') : join(directory, 'Disk Watch.exe')
 const systemPowerShell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
+// Intermediate Node/Electron processes do not get PowerShell 7's automatic Windows PowerShell path correction.
+const childEnv = { ...process.env }
+for (const key of Object.keys(childEnv))
+  if (['PSMODULEPATH', 'DISK_WATCH_GITHUB_TOKEN'].includes(key.toUpperCase())) delete childEnv[key]
 const run = (command, args, options = {}) => {
-  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 180_000, ...options })
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 180_000,
+    env: childEnv,
+    ...options,
+  })
   if (result.error) throw result.error
   assert.equal(result.status, 0, result.stdout + '\n' + result.stderr)
   return result.stdout.trim()
@@ -53,7 +63,7 @@ try {
         '-e',
         `const { installBundle } = await import(${JSON.stringify(pathToFileURL(join(source, 'Contents/Resources/install-mac.mjs')).href)}); await installBundle(${JSON.stringify(source)}, ${JSON.stringify(directory)}, { register: false });`,
       ],
-      { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '', NODE_PATH: '' } },
+      { env: { ...childEnv, ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '', NODE_PATH: '' } },
     )
   } else {
     run(systemPowerShell, [
@@ -70,7 +80,7 @@ try {
       directory,
     ])
   }
-  const { ELECTRON_RUN_AS_NODE: ignored, ...env } = process.env
+  const { ELECTRON_RUN_AS_NODE: ignored, ...env } = childEnv
   app = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`], env })
   await app.firstWindow()
   const oldPid = app.process().pid

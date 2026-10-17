@@ -214,10 +214,14 @@ it.skipIf(process.platform !== 'darwin')(
   },
 )
 
-it('omits GitHub credentials from the detached installer environment and staged scripts', async () => {
+it('omits GitHub credentials and inherited PowerShell module paths from the detached installer', async () => {
   const { root, updates } = await fixture()
   vi.stubEnv('DISK_WATCH_GITHUB_TOKEN', 'environment-only-test-token')
-  if (process.platform !== 'win32') vi.stubEnv('disk_watch_github_token', 'lowercase-test-token')
+  vi.stubEnv('PSModulePath', 'PowerShell7-test-modules')
+  if (process.platform !== 'win32') {
+    vi.stubEnv('disk_watch_github_token', 'lowercase-test-token')
+    vi.stubEnv('psmodulepath', 'lowercase-test-modules')
+  }
   vi.stubEnv('DISK_WATCH_TEST_KEEP', 'retained')
   const fakeChild = Object.assign(new EventEmitter(), { unref: vi.fn() })
   vi.mocked(spawn).mockImplementationOnce(() => {
@@ -229,7 +233,9 @@ it('omits GitHub credentials from the detached installer environment and staged 
   expect((await updates.installAndRestart()).phase).toBe('installing')
   const childEnv = vi.mocked(spawn).mock.calls[0]![2]!.env!
   expect(Object.keys(childEnv).some((key) => key.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN')).toBe(false)
+  expect(Object.keys(childEnv).some((key) => key.toUpperCase() === 'PSMODULEPATH')).toBe(false)
   expect(childEnv.DISK_WATCH_TEST_KEEP).toBe('retained')
+  expect(process.env.PSModulePath).toBe('PowerShell7-test-modules')
   expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('environment-only-test-token')
   const { readdir } = await import('node:fs/promises')
   const stage = join(root, 'cache', (await readdir(join(root, 'cache')))[0]!)

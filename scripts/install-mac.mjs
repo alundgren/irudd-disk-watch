@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { signAsync } from '@electron/osx-sign'
 
 const root = resolve(fileURLToPath(import.meta.url), '../..')
@@ -226,8 +226,10 @@ async function main() {
   let directory = '/Applications'
   let source = join(root, 'dist/mac-arm64', appName)
   let skipBuild = false
+  let register = true
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--skip-build') skipBuild = true
+    else if (args[i] === '--no-register') register = false
     else if (args[i] === '--install-directory' || args[i] === '--source') {
       const option = args[i]
       const value = args[++i]
@@ -261,7 +263,7 @@ async function main() {
     run(process.execPath, [join(root, 'scripts/build-install-helper.mjs')])
     run(join(root, 'node_modules/.bin/electron-builder'), ['--mac', 'dir', '--arm64', '--publish', 'never'])
   }
-  const target = await installBundle(source, directory, { signingIdentity })
+  const target = await installBundle(source, directory, { signingIdentity, register })
   console.log(`Installed: ${target}`)
   console.log('Search Spotlight for Disk Watch. The installer does not launch the app.')
   console.log('Existing scans and settings remain in your disk-watch Application Support folder.')
@@ -272,7 +274,11 @@ async function main() {
   )
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  exists(process.argv[1]) &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
   main().catch((error) => {
     console.error(error.message)
     process.exitCode = 1
