@@ -16,7 +16,7 @@ const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 const name = mac ? 'Disk-Watch-mac-arm64.tar.gz' : `Disk-Watch-${version}-x64-Setup.exe`
 const asset = readFileSync(resolve('dist', name))
 const executable = mac ? join(directory, 'Disk Watch.app/Contents/MacOS/Disk Watch') : join(directory, 'Disk Watch.exe')
-const systemPowerShell = join(process.env.SystemRoot ?? 'C:\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
+const systemPowerShell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 180_000, ...options })
   if (result.error) throw result.error

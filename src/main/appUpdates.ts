@@ -246,7 +246,7 @@ export class AppUpdates extends EventEmitter {
         )
         args = [script]
       } else {
-        command = join(process.env.SystemRoot ?? 'C:\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
+        command = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
         const script = join(p.stage, 'handoff.ps1')
         const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
         await writeFile(
