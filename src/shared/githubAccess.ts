@@ -1,5 +1,6 @@
 export interface GitHubAccessState {
   source: 'saved' | 'environment' | 'none'
+  hasSavedRecord: boolean
   canSave: boolean
   message?: string
 }

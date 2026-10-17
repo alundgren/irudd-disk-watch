@@ -1,10 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, test } from 'vite-plus/test'
+import { afterEach, expect, test, vi } from 'vite-plus/test'
 import { GitHubAccess } from './githubAccess'
 
 const token = 'github_pat_fixture_1234567890'
+vi.mock('node:fs', { spy: true })
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -27,7 +28,7 @@ const storage = {
 test('access survives a normal relaunch without returning or storing a plaintext token', () => {
   const file = fixture()
   const access = new GitHubAccess(file, storage, () => undefined)
-  expect(access.save(token)).toEqual({ source: 'saved', canSave: true })
+  expect(access.save(token)).toEqual({ source: 'saved', hasSavedRecord: true, canSave: true })
   expect(readFileSync(file).includes(Buffer.from(token))).toBe(false)
   expect(JSON.stringify(access.getState())).not.toContain(token)
   const restarted = new GitHubAccess(file, storage, () => undefined)
@@ -90,6 +91,55 @@ test('token validation never repeats the supplied secret', () => {
     expect(String(error)).not.toContain(token)
   }
 })
+
+test('malformed environment access is rejected before it can become an HTTP header', () => {
+  const invalid = token + '\nsecret-tail'
+  const access = new GitHubAccess(fixture(), storage, () => invalid)
+  expect(() => access.token).toThrow('without spaces or line breaks')
+  expect(access.getState().source).toBe('none')
+  expect(access.getState().message).not.toContain(token)
+  expect(access.getState().message).toContain('environment GitHub token is invalid')
+})
+
+test('an encrypted record can be removed even when decryption is unavailable', () => {
+  const file = fixture()
+  new GitHubAccess(file, storage).save(token)
+  const access = new GitHubAccess(file, { ...storage, isEncryptionAvailable: () => false }, () => undefined)
+  expect(access.getState()).toMatchObject({ source: 'none', hasSavedRecord: true, canSave: false })
+  expect(access.clear()).toMatchObject({ source: 'none', hasSavedRecord: false })
+  expect(() => readFileSync(file)).toThrow()
+})
+
+if (process.platform !== 'win32') {
+  test('linked or shared credential directories are refused', () => {
+    const file = fixture()
+    const shared = join(file, '..', 'shared')
+    mkdirSync(shared, { mode: 0o700 })
+    const linked = join(file, '..', 'link')
+    symlinkSync(shared, linked)
+    expect(() => new GitHubAccess(join(linked, 'access'), storage).save(token)).toThrow('private')
+    chmodSync(shared, 0o777)
+    expect(() => new GitHubAccess(join(shared, 'access'), storage).save(token)).toThrow('private')
+  })
+
+  test('a link swapped in between metadata and open is never read', () => {
+    const file = fixture()
+    new GitHubAccess(file, storage).save(token)
+    const outside = join(file, '..', 'outside')
+    writeFileSync(outside, 'sentinel', { mode: 0o600 })
+    const actualOpen = openSync
+    vi.mocked(openSync).mockImplementationOnce((path, flags, mode) => {
+      rmSync(file)
+      symlinkSync(outside, file)
+      return actualOpen(path, flags, mode)
+    })
+    const decryptString = vi.fn(storage.decryptString)
+    const access = new GitHubAccess(file, { ...storage, decryptString }, () => undefined)
+    expect(access.token).toBeUndefined()
+    expect(decryptString).not.toHaveBeenCalled()
+    expect(readFileSync(outside, 'utf8')).toBe('sentinel')
+  })
+}
 
 if (process.platform !== 'win32')
   test('a linked credential destination cannot overwrite another file', () => {
