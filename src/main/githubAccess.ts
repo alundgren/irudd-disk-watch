@@ -10,6 +10,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  type Stats,
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -26,11 +27,17 @@ export class GitHubAccess {
   private saved?: string
   private message?: string
   private hasSavedRecord = false
+  private readonly file: string
+  private readonly storage: SecretStorage
+  private readonly environmentToken: () => string | undefined
   constructor(
-    private readonly file: string,
-    private readonly storage: SecretStorage,
-    private readonly environmentToken: () => string | undefined = () => process.env.DISK_WATCH_GITHUB_TOKEN,
+    file: string,
+    storage: SecretStorage,
+    environmentToken: () => string | undefined = () => process.env.DISK_WATCH_GITHUB_TOKEN,
   ) {
+    this.file = file
+    this.storage = storage
+    this.environmentToken = environmentToken
     try {
       const bytes = this.readSaved()
       if (bytes) {
@@ -104,7 +111,7 @@ export class GitHubAccess {
     }
     return canonical
   }
-  private record(): { path: string; stat: ReturnType<typeof lstatSync> } | undefined {
+  private record(): { path: string; stat: Stats } | undefined {
     const parent = this.directory()
     if (!parent) return undefined
     const path = join(parent, basename(this.file))

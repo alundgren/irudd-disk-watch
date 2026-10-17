@@ -18,7 +18,7 @@ const fixture = () => {
 // An opaque fixture cipher keeps the test independent of this Mac's actual Keychain.
 const storage = {
   isEncryptionAvailable: () => true,
-  encryptString: (value: string) => Buffer.from(value).map((byte) => byte ^ 123),
+  encryptString: (value: string) => Buffer.from(Buffer.from(value).map((byte) => byte ^ 123)),
   decryptString: (value: Buffer) =>
     Buffer.from(value)
       .map((byte) => byte ^ 123)

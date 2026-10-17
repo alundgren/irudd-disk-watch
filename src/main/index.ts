@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -23,6 +23,10 @@ import createScanWorker from './scanWorker?nodeWorker'
 import { openDb, Store, LEGACY_WINDOWS_MACHINE_ID, type DiskRow } from './store'
 import { prepareHistory } from './history'
 import { absoluteFolderPath, selectedVolume, verifyVolume, volumeDiscovery } from './volumes'
+import { AppUpdates } from './appUpdates'
+import { downloadReleaseAsset, getRelease, setReleaseTokenProvider } from './releases'
+import { synchronizeRemoteScanner } from './sshInstall'
+import { GitHubAccess } from './githubAccess'
 
 const MIN_FILE_SIZE = 1024 * 1024
 const hostOS: TargetOS = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
@@ -51,6 +55,8 @@ let activeDelete: Promise<DeleteResult> | null = null
 let localMachine: Promise<Machine> | undefined
 let restarting = false
 let activeSetup = false
+let updates: AppUpdates | undefined
+let githubAccess: GitHubAccess
 const discoveredVolumes = new Map<string, NativeVolume[]>()
 
 function connection(machine: Machine): WorkerConnection {
@@ -87,7 +93,7 @@ function send(event: ScanEvent) {
   window?.webContents.send('scan-event', event)
 }
 function idle() {
-  if (activeScan || activeDelete || restarting || activeSetup)
+  if (activeScan || activeDelete || restarting || activeSetup || updates?.isInstalling())
     throw new Error('Wait for the current filesystem operation to finish.')
 }
 async function setupOperation<T>(run: () => Promise<T>): Promise<T> {
@@ -242,6 +248,55 @@ async function restartElevated() {
   app.quit()
 }
 function registerIpc() {
+  ipcMain.handle('githubAccess:getState', () => githubAccess.getState())
+  ipcMain.handle('githubAccess:save', (_event, token: string) => {
+    if (updates?.isInstalling()) throw new Error('Wait for the app update to finish.')
+    return githubAccess.save(token)
+  })
+  ipcMain.handle('githubAccess:clear', () => {
+    if (updates?.isInstalling()) throw new Error('Wait for the app update to finish.')
+    return githubAccess.clear()
+  })
+  ipcMain.handle('updates:getState', () => updates!.getState())
+  ipcMain.handle('updates:check', () => updates!.check())
+  ipcMain.handle('updates:download', () => updates!.download())
+  ipcMain.handle('updates:installAndRestart', () => updates!.installAndRestart())
+  ipcMain.handle('installSshScanner', (_event, destination: string) =>
+    setupOperation(async () => {
+      if (typeof destination !== 'string') throw new Error('Enter an SSH destination.')
+      const saved = store
+        .listMachines()
+        .filter((machine) => machine.kind === 'ssh' && machine.destination === destination)
+      if (saved.length > 1)
+        throw new Error('Several saved machines use this destination. Restore the intended SSH alias before updating.')
+      const machine: Machine = saved[0] ?? {
+        id: randomUUID(),
+        kind: 'ssh',
+        os: 'linux',
+        name: destination,
+        destination,
+      }
+      const version = app.getVersion()
+      const result = await synchronizeRemoteScanner(machine, async (arch) => {
+        const release = await getRelease(version)
+        return downloadReleaseAsset(release, `dw-scan-linux-${arch}`)
+      })
+      const existing = store
+        .listMachines()
+        .find(
+          (item) =>
+            item.kind === 'ssh' && item.workerId === result.machine.workerId && item.account === result.machine.account,
+        )
+      store.upsertMachine(existing ? { ...result.machine, id: existing.id, name: existing.name } : result.machine)
+      return {
+        version,
+        changed: result.changed,
+        message: result.changed
+          ? `Installed scanner ${version}. Worker identity and settings were preserved. You can scan this machine now.`
+          : `The scanner already matches Disk Watch ${version}. You can scan this machine now.`,
+      }
+    }),
+  )
   ipcMain.handle('listDisks', () => store.listDisks().map(toDisk))
   ipcMain.handle('discoverVolumes', (_event, destination?: string) =>
     setupOperation(async () => {
@@ -490,6 +545,11 @@ function createWindow() {
   window.on('closed', () => {
     window = null
   })
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === 'https://github.com/alundgren/irudd-disk-watch/blob/main/docs/installing.md')
+      void shell.openExternal(url)
+    return { action: 'deny' }
+  })
   if (process.env.ELECTRON_RENDERER_URL) window.loadURL(process.env.ELECTRON_RENDERER_URL)
   else window.loadFile(join(import.meta.dirname, '../renderer/index.html'))
 }
@@ -500,10 +560,30 @@ app
     dbFile = await prepareHistory(app.getPath('userData'))
     store = new Store(openDb(dbFile))
     store.failInterruptedScans()
+    githubAccess = new GitHubAccess(join(app.getPath('userData'), 'github-access', 'token.encrypted'), {
+      isEncryptionAvailable: () =>
+        safeStorage.isEncryptionAvailable() &&
+        (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+      encryptString: (value) => safeStorage.encryptString(value),
+      decryptString: (value) => safeStorage.decryptString(value),
+    })
+    setReleaseTokenProvider(() => githubAccess.token)
+    updates = new AppUpdates({
+      version: app.getVersion(),
+      isPackaged: app.isPackaged,
+      execPath: process.execPath,
+      resourcesPath: process.resourcesPath,
+      cacheDirectory: join(app.getPath('userData'), 'updates'),
+      userDataDirectory: app.getPath('userData'),
+      isFilesystemBusy: () => !!(activeScan || activeDelete || activeSetup || restarting),
+      quit: () => app.quit(),
+    })
+    updates.on('state', (state) => window?.webContents.send('update-state', state))
     if (hostOS === 'windows' && store.listDisks().some((disk) => disk.machineId === LEGACY_WINDOWS_MACHINE_ID))
       await ensureLocalMachine()
     registerIpc()
     createWindow()
+    void updates.check()
   })
   .catch((error) => {
     console.error('Disk Watch startup failed:', error)

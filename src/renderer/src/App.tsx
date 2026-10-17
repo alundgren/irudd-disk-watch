@@ -33,6 +33,7 @@ import { SettingsView } from './SettingsView'
 import { SpaceView } from './SpaceView'
 import { TreemapView } from './TreemapView'
 import { VolumeChooser } from './VolumeChooser'
+import { AppUpdatesDialog } from './AppUpdatesDialog'
 import { sameTarget, containsTarget, summarizeStaged, verifiedScanTime, QueueIndex } from './deleteQueue'
 import { errorText, LIMIT_REASON, QUEUE_LIMIT, type BulkOutcome, type SkippedItem } from './bulkQueue'
 
@@ -79,6 +80,7 @@ interface ContextTarget {
 }
 
 export function App() {
+  const [appUpdatesOpen, setAppUpdatesOpen] = useState(false)
   const [chooser, setChooser] = useState<{ source: 'local' | 'ssh'; destination?: string } | null>(null)
   const [verifiedScans, setVerifiedScans] = useState<Record<number, number>>({})
   const [operations, setOperations] = useState<Record<number, DeleteOperation[]>>({})
@@ -656,7 +658,13 @@ export function App() {
         <button className="add-disk" onClick={() => setChooser({ source: 'ssh' })}>
           Track over SSH
         </button>
+        <button className="add-disk" onClick={() => setAppUpdatesOpen(true)}>
+          App updates
+        </button>
       </nav>
+      {appUpdatesOpen && (
+        <AppUpdatesDialog filesystemBusy={progress !== null || deleting} onClose={() => setAppUpdatesOpen(false)} />
+      )}
       <main>
         {notice && (
           <div className="notice" role="status">

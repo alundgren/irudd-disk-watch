@@ -2,25 +2,25 @@
 
 A desktop app for Windows and Mac that shows where your disk space went, and what changed since the last time you looked.
 
-You choose which drives or folders to track. One click scans all of them. Nothing runs in the background, so the app costs nothing while you work. Every scan is kept, so you can browse any earlier scan as a full tree. You can also compare any two scans to see which folders grew, which are new, and which are gone.
+You choose which drives or folders to track. One click scans the selected roots. Nothing runs in the background, so the app costs nothing while you work. Every scan is kept, so you can browse any earlier scan as a full tree. You can also compare any two scans to see which folders grew, which are new, and which are gone.
 
 ## Install it
 
-Install the latest released app without Node, Rust or a source checkout.
+Install the latest released app without Node, Rust or a source checkout. The initial installer requires this change on main and a published release. This repository is private, so first export `DISK_WATCH_GITHUB_TOKEN` with Contents read access to this repository in the terminal used for installation.
 
 On an Apple Silicon Mac:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.sh | bash
+curl -fsSL -H "Authorization: Bearer $DISK_WATCH_GITHUB_TOKEN" https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.sh | bash
 ```
 
 On Windows x64, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.ps1 | iex
+irm -Headers @{ Authorization = "Bearer $env:DISK_WATCH_GITHUB_TOKEN" } https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.ps1 | iex
 ```
 
-Use the app's update controls to check for a new release and install it when you are ready to restart. Updates preserve saved scans and settings. See [installation, updates and moving from a hand-installed copy](docs/installing.md) before removing an existing installation. Full Disk Access on a Mac and unsigned-app approval are manual operating-system permissions.
+After installation, open **App updates**, save GitHub access once using the OS-encrypted credential setting, and check for a new release and install it when you are ready to restart. Updates preserve saved scans and settings. See [installation, updates and moving from a hand-installed copy](docs/installing.md) before removing an existing installation. Full Disk Access on a Mac and unsigned-app approval are manual operating-system permissions.
 
 For a Linux scanner, choose **Track over SSH**, enter an existing SSH alias or `user@host`, and choose **Install or update scanner**. The app downloads the scanner matching its own release, verifies it, and installs it over SSH. No daemon or build tools are required on the remote. Existing SSH key authentication and a previously verified host key are required. Remote root Settings has the same install/update action.
 
@@ -64,7 +64,7 @@ On Windows, `vp run app` builds and starts the app as administrator after a UAC 
 
 On Mac, `vp run app` builds and starts Electron normally. Native scans use the Mac account's existing filesystem permissions. Choose a detected drive in the app, enter a custom folder path, or use Track over SSH for a Linux worker. On a modern Mac, choose the recommended Data volume for applications and user files. The system root `/` is a separate read-only volume and does not include Data in its scan. Forward a separate profile directory when needed, for example `vp run app -- --user-data-dir=/absolute/profile-directory`. The Windows UAC launch retains those arguments too.
 
-For local APFS roots, **Quick scan (experimental)** reuses unchanged folders using macOS change notifications. Its first run builds a full baseline. Repeat scans can be faster on large roots with few changes; small roots can take longer because collecting events and maintaining the cache adds work. **Scan all drives** always performs the normal scan. Quick scans automatically refresh the full baseline after ten incremental runs or 24 hours, and fall back when the cache, root, scan rules, or event history cannot be trusted. Other operating systems and SSH roots keep their normal scanning method. Notifications are asynchronous, so use a full scan when you need fresh observations throughout the tree. Saved history remains independent of the disposable native cache.
+For local APFS roots, **Quick scan (experimental)** reuses unchanged folders using macOS change notifications. Its first run builds a full baseline. Repeat scans can be faster on large roots with few changes; small roots can take longer because collecting events and maintaining the cache adds work. **Scan selected** always performs the normal scan for the checked roots. Quick scans automatically refresh the full baseline after ten incremental runs or 24 hours, and fall back when the cache, root, scan rules, or event history cannot be trusted. Other operating systems and SSH roots keep their normal scanning method. Notifications are asynchronous, so use a full scan when you need fresh observations throughout the tree. Saved history remains independent of the disposable native cache.
 
 Build a personal unsigned Mac ARM64 app without launching or installing it:
 

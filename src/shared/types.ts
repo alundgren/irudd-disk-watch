@@ -1,3 +1,6 @@
+import type { AppUpdateApi } from './updates'
+import type { GitHubAccessApi } from './githubAccess'
+
 export type TargetOS = 'windows' | 'macos' | 'linux'
 
 export interface Machine {
@@ -291,6 +294,8 @@ export type ScanEvent =
   | { type: 'run-finished' }
 
 export interface DiskWatchApi {
+  githubAccess: GitHubAccessApi
+  updates: AppUpdateApi
   installSshScanner(destination: string): Promise<RemoteInstallResult>
   discoverVolumes(destination?: string): Promise<VolumeDiscovery & { machine: Machine }>
   addVolume(machineId: string, volume: NativeVolume): Promise<Disk>

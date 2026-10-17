@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { DiskWatchApi, ScanEvent } from '../shared/types'
+import type { UpdateState } from '../shared/updates'
 
 const invoke =
   (channel: Exclude<keyof DiskWatchApi, 'onScanEvent'>) =>
@@ -7,6 +8,22 @@ const invoke =
     ipcRenderer.invoke(channel, ...args)
 
 const api: DiskWatchApi = {
+  githubAccess: {
+    getState: () => ipcRenderer.invoke('githubAccess:getState'),
+    save: (token) => ipcRenderer.invoke('githubAccess:save', token),
+    clear: () => ipcRenderer.invoke('githubAccess:clear'),
+  },
+  updates: {
+    getState: () => ipcRenderer.invoke('updates:getState'),
+    check: () => ipcRenderer.invoke('updates:check'),
+    download: () => ipcRenderer.invoke('updates:download'),
+    installAndRestart: () => ipcRenderer.invoke('updates:installAndRestart'),
+    onState(listener) {
+      const handler = (_event: IpcRendererEvent, state: UpdateState) => listener(state)
+      ipcRenderer.on('update-state', handler)
+      return () => ipcRenderer.off('update-state', handler)
+    },
+  },
   installSshScanner: invoke('installSshScanner'),
   discoverVolumes: invoke('discoverVolumes'),
   addVolume: invoke('addVolume'),
