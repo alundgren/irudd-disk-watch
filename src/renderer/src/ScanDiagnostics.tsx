@@ -116,9 +116,9 @@ export function ScanDiagnostics({
               {issues.issues.some((issue) => /permission denied|operation not permitted/i.test(issue.message)) && (
                 <p>
                   Saved samples include access restrictions. An SSH scan uses the remote account's permissions;
-                  protected system folders and other accounts' files can remain unreadable. On a Mac, review Full Disk
-                  Access in Settings. Track a folder you can read, or deliberately exclude paths you do not need, then
-                  scan again. Excluded paths are outside the recorded scan scope.
+                  protected system folders and other accounts' files can remain unreadable. For a local Mac scan, review
+                  Full Disk Access in Settings. Track a folder you can read, or deliberately exclude paths you do not
+                  need, then scan again. Excluded paths are outside the recorded scan scope.
                 </p>
               )}
               {issues.issues.some((issue) => /timed out/i.test(issue.message)) && (
