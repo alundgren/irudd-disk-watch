@@ -7,6 +7,11 @@ const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const MAX_ASSET = 700 * 1024 * 1024
 const MAX_METADATA = 1024 * 1024
 const TIMEOUT = 180_000
+let releaseTokenProvider: () => string | undefined = () => process.env.DISK_WATCH_GITHUB_TOKEN
+
+export function setReleaseTokenProvider(provider: () => string | undefined): void {
+  releaseTokenProvider = provider
+}
 
 export type Release = {
   version: string
@@ -23,7 +28,7 @@ export function releaseAssetNames(version: string): string[] {
   ]
 }
 
-async function fetchBytes(url: string, limit: number): Promise<Buffer> {
+async function fetchBytes(url: string, limit: number, token: string | undefined): Promise<Buffer> {
   // Only the initial URL is supplied by this module. GitHub redirects asset downloads to its CDN.
   const signal = AbortSignal.timeout(TIMEOUT)
   let current = url
@@ -50,9 +55,7 @@ async function fetchBytes(url: string, limit: number): Promise<Buffer> {
             ? 'application/vnd.github+json'
             : 'application/octet-stream',
         'User-Agent': 'Disk-Watch',
-        ...(parsed.hostname === 'api.github.com' && process.env.DISK_WATCH_GITHUB_TOKEN
-          ? { Authorization: `Bearer ${process.env.DISK_WATCH_GITHUB_TOKEN}` }
-          : {}),
+        ...(parsed.hostname === 'api.github.com' && token ? { Authorization: `Bearer ${token}` } : {}),
       },
     })
     if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -65,7 +68,7 @@ async function fetchBytes(url: string, limit: number): Promise<Buffer> {
     if (!response.ok) {
       await response.body?.cancel()
       throw new Error(
-        `Release download failed: HTTP ${response.status}.${response.status === 404 && !process.env.DISK_WATCH_GITHUB_TOKEN ? ' This repository may be private. Provide DISK_WATCH_GITHUB_TOKEN with contents read access when starting Disk Watch.' : ''}`,
+        `Release download failed: HTTP ${response.status}.${response.status === 404 && !token ? ' A release may not exist yet. For private repository access, save a token with contents read access in App updates > GitHub access.' : ''}`,
       )
     }
     const length = response.headers.get('content-length')
@@ -96,8 +99,9 @@ async function fetchBytes(url: string, limit: number): Promise<Buffer> {
 
 export async function getRelease(version?: string): Promise<Release> {
   if (version !== undefined && !versionPattern.test(version)) throw new Error('Invalid stable release version.')
+  const token = releaseTokenProvider()
   const metadata = JSON.parse(
-    (await fetchBytes(version ? `${api}/tags/v${version}` : `${api}/latest`, MAX_METADATA)).toString('utf8'),
+    (await fetchBytes(version ? `${api}/tags/v${version}` : `${api}/latest`, MAX_METADATA, token)).toString('utf8'),
   )
   const tag = metadata.tag_name
   if (
@@ -147,18 +151,19 @@ export async function downloadReleaseAsset(release: Release, name: string): Prom
   const prefix = `${downloads}v${release.version}/`
   for (const file of [name, 'SHA256SUMS'])
     if (release.assets[file] !== `${prefix}${file}`) throw new Error('Invalid release asset URL.')
+  const token = releaseTokenProvider()
   const assetUrl = (file: string) => {
-    if (!process.env.DISK_WATCH_GITHUB_TOKEN) return `${prefix}${file}`
+    if (!token) return `${prefix}${file}`
     const id = release.assetIds?.[file]
     if (!Number.isSafeInteger(id) || !id || id < 1)
       throw new Error('Release asset ID is missing. Check the release again.')
     return `${api}/assets/${id}`
   }
   const manifest = parseChecksums(
-    (await fetchBytes(assetUrl('SHA256SUMS'), MAX_METADATA)).toString('utf8'),
+    (await fetchBytes(assetUrl('SHA256SUMS'), MAX_METADATA, token)).toString('utf8'),
     release.version,
   )
-  const contents = await fetchBytes(assetUrl(name), MAX_ASSET)
+  const contents = await fetchBytes(assetUrl(name), MAX_ASSET, token)
   const actual = createHash('sha256').update(contents).digest()
   if (!timingSafeEqual(actual, Buffer.from(manifest.get(name)!, 'hex')))
     throw new Error(`SHA256 verification failed for ${name}. The installed app was not changed.`)

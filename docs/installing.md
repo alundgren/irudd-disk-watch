@@ -48,7 +48,7 @@ Set `package.json` to the stable version and create the matching `v<version>` ta
 
 # Private repository access
 
-This repository is currently private. GitHub returns 404 for anonymous release requests. Set `DISK_WATCH_GITHUB_TOKEN` to a GitHub token with read access to this repository's contents. The scripts and app use it only for GitHub API requests, use numeric release asset IDs for authenticated downloads, and do not save the token. API redirects to the release CDN do not receive the token.
+This repository is currently private. GitHub returns 404 for anonymous release requests. Set `DISK_WATCH_GITHUB_TOKEN` to a GitHub token with read access to this repository's contents. The bootstrap scripts use it only for GitHub API requests and use numeric release asset IDs for authenticated downloads. They do not save the token. API redirects to the release CDN do not receive the token.
 
 For a private Mac bootstrap, export the token in your shell and authenticate the script request too:
 
@@ -63,4 +63,6 @@ For Windows, set `$env:DISK_WATCH_GITHUB_TOKEN` in PowerShell before running:
 irm -Headers @{ Authorization = "Bearer $env:DISK_WATCH_GITHUB_TOKEN" } https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.ps1 | iex
 ```
 
-App updates and SSH scanner downloads need that same environment variable in the running app while the repository is private. Finder and Start menu launches generally do not inherit a terminal's temporary environment. Start the app from the configured terminal when using this method. A future public repository would allow the plain install commands and anonymous in-app checks. Repository visibility is not changed by these installers.
+The authenticated bootstrap header and environment variable are needed for initial installation. After opening Disk Watch, go to App updates, then GitHub access, and save a token with contents read access to this repository. Disk Watch encrypts the saved token using operating-system credential protection. App updates and SSH scanner downloads then work after normal Finder or Start menu launches, without a configured terminal. GitHub access shows credential status and lets you replace or clear the saved token. The app keeps the decrypted token in memory rather than adding it to its environment. Detached installer helpers receive no GitHub token because their candidate is already downloaded and verified.
+
+The environment variable remains available for bootstrap and developer use. Tokens are not echoed or written to plaintext files. A future public repository would allow the plain install commands and anonymous in-app checks. Repository visibility is not changed by these installers.

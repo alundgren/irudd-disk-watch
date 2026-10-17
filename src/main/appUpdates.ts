@@ -265,12 +265,15 @@ export class AppUpdates extends EventEmitter {
         message: `Restarting to install the update. Failure details are saved to ${log}`,
       })
       try {
+        const childEnv: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }
+        for (const key of Object.keys(childEnv))
+          if (key.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN') delete childEnv[key]
         const child = spawn(command, args, {
           detached: true,
           stdio: 'ignore',
           windowsHide: true,
           cwd: p.stage,
-          env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
+          env: childEnv,
         })
         await new Promise<void>((resolveSpawn, reject) => {
           child.once('spawn', resolveSpawn)

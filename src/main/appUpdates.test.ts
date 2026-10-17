@@ -15,6 +15,7 @@ vi.mock('./releases', () => ({ getRelease: vi.fn(), downloadReleaseAsset: vi.fn(
 const fixtures: string[] = []
 afterEach(async () => {
   vi.resetAllMocks()
+  vi.unstubAllEnvs()
   await Promise.all(fixtures.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 async function fixture() {
@@ -212,3 +213,29 @@ it.skipIf(process.platform !== 'darwin')(
     expect(await readFile(join(stage, 'Disk Watch.app/Contents/Resources/app.asar'), 'utf8')).toBe('fixture archive')
   },
 )
+
+it('omits GitHub credentials from the detached installer environment and staged scripts', async () => {
+  const { root, updates } = await fixture()
+  vi.stubEnv('DISK_WATCH_GITHUB_TOKEN', 'environment-only-test-token')
+  if (process.platform !== 'win32') vi.stubEnv('disk_watch_github_token', 'lowercase-test-token')
+  vi.stubEnv('DISK_WATCH_TEST_KEEP', 'retained')
+  const fakeChild = Object.assign(new EventEmitter(), { unref: vi.fn() })
+  vi.mocked(spawn).mockImplementationOnce(() => {
+    queueMicrotask(() => fakeChild.emit('spawn'))
+    return fakeChild as unknown as ReturnType<typeof spawn>
+  })
+  await updates.check()
+  await updates.download()
+  expect((await updates.installAndRestart()).phase).toBe('installing')
+  const childEnv = vi.mocked(spawn).mock.calls[0]![2]!.env!
+  expect(Object.keys(childEnv).some((key) => key.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN')).toBe(false)
+  expect(childEnv.DISK_WATCH_TEST_KEEP).toBe('retained')
+  expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('environment-only-test-token')
+  const { readdir } = await import('node:fs/promises')
+  const stage = join(root, 'cache', (await readdir(join(root, 'cache')))[0]!)
+  for (const file of await readdir(stage)) {
+    const contents = await readFile(join(stage, file), 'utf8')
+    expect(contents).not.toContain('environment-only-test-token')
+    expect(contents).not.toContain('lowercase-test-token')
+  }
+})

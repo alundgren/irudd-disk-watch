@@ -1,6 +1,13 @@
-import { afterEach, describe, expect, it, vi } from 'vite-plus/test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import { createHash } from 'node:crypto'
-import { downloadReleaseAsset, getRelease, parseChecksums, releaseAssetNames, RELEASE_REPOSITORY } from './releases'
+import {
+  downloadReleaseAsset,
+  getRelease,
+  parseChecksums,
+  releaseAssetNames,
+  RELEASE_REPOSITORY,
+  setReleaseTokenProvider,
+} from './releases'
 
 const version = '0.2.0'
 const prefix = `https://github.com/${RELEASE_REPOSITORY}/releases/download/v${version}/`
@@ -12,13 +19,20 @@ const metadata = () => ({
   tag_name: `v${version}`,
   draft: false,
   prerelease: false,
-  assets: [...names, 'SHA256SUMS'].map((name) => ({ name, state: 'uploaded', browser_download_url: prefix + name })),
+  assets: [...names, 'SHA256SUMS'].map((name, i) => ({
+    name,
+    id: i + 1,
+    state: 'uploaded',
+    browser_download_url: prefix + name,
+  })),
 })
 const release = () => ({
   version,
   assets: Object.fromEntries([...names, 'SHA256SUMS'].map((name) => [name, prefix + name])),
 })
+beforeEach(() => vi.stubEnv('DISK_WATCH_GITHUB_TOKEN', ''))
 afterEach(() => {
+  setReleaseTokenProvider(() => process.env.DISK_WATCH_GITHUB_TOKEN)
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
 })
@@ -142,4 +156,90 @@ it('authenticates private release downloads through fixed asset IDs without send
   expect(fetcher.mock.calls[0]![1].headers.Authorization).toBe('Bearer test-token')
   expect(fetcher.mock.calls[1]![1].headers.Accept).toBe('application/octet-stream')
   expect(fetcher.mock.calls[2]![1].headers.Authorization).toBeUndefined()
+})
+
+it('snapshots the token provider once per release lookup, including redirects', async () => {
+  let token = 'provider-first'
+  const provider = vi.fn(() => token)
+  setReleaseTokenProvider(provider)
+  const fetcher = vi
+    .fn()
+    .mockImplementationOnce(async () => {
+      token = 'provider-next'
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/tags/v${version}` },
+      })
+    })
+    .mockImplementation(async () => new Response(JSON.stringify(metadata())))
+  vi.stubGlobal('fetch', fetcher)
+  const result = await getRelease()
+  expect(provider).toHaveBeenCalledOnce()
+  expect(fetcher.mock.calls.map(([, options]) => options.headers.Authorization)).toEqual([
+    'Bearer provider-first',
+    'Bearer provider-first',
+  ])
+  expect(JSON.stringify(result)).not.toContain('provider-first')
+  await getRelease(version)
+  expect(provider).toHaveBeenCalledTimes(2)
+  expect(fetcher.mock.calls[2]![1].headers.Authorization).toBe('Bearer provider-next')
+})
+
+it('keeps one provider token for manifest and asset requests and strips it on CDN redirects', async () => {
+  const provider = vi.fn(() => 'provider-snapshot')
+  setReleaseTokenProvider(provider)
+  const result = {
+    ...release(),
+    assetIds: Object.fromEntries([...names, 'SHA256SUMS'].map((name, i) => [name, i + 1])),
+  }
+  const fetcher = vi
+    .fn()
+    .mockImplementationOnce(async () => {
+      setReleaseTokenProvider(() => 'replacement-token')
+      return new Response(manifest)
+    })
+    .mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'https://release-assets.githubusercontent.com/candidate' },
+      }),
+    )
+    .mockResolvedValueOnce(new Response(bytes))
+  vi.stubGlobal('fetch', fetcher)
+  expect(await downloadReleaseAsset(result, names[0]!)).toEqual(bytes)
+  expect(provider).toHaveBeenCalledOnce()
+  expect(fetcher.mock.calls.map(([, options]) => options.headers.Authorization)).toEqual([
+    'Bearer provider-snapshot',
+    'Bearer provider-snapshot',
+    undefined,
+  ])
+  expect(fetcher.mock.calls[1]![0]).toBe(`https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/assets/1`)
+  expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('')
+})
+
+it('keeps an anonymous download anonymous when credentials change during the operation', async () => {
+  const provider = vi.fn(() => undefined)
+  setReleaseTokenProvider(provider)
+  const fetcher = vi
+    .fn()
+    .mockImplementationOnce(async () => {
+      setReleaseTokenProvider(() => 'saved-later')
+      return new Response(manifest)
+    })
+    .mockResolvedValueOnce(new Response(bytes))
+  vi.stubGlobal('fetch', fetcher)
+  expect(await downloadReleaseAsset(release(), names[0]!)).toEqual(bytes)
+  expect(provider).toHaveBeenCalledOnce()
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual([prefix + 'SHA256SUMS', prefix + names[0]])
+  expect(fetcher.mock.calls.every(([, options]) => options.headers.Authorization === undefined)).toBe(true)
+})
+
+it('explains missing releases and the GitHub access setting for an anonymous 404', async () => {
+  setReleaseTokenProvider(() => undefined)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(null, { status: 404 })),
+  )
+  await expect(getRelease()).rejects.toThrow('A release may not exist yet.')
+  await expect(getRelease()).rejects.toThrow('App updates > GitHub access')
 })
