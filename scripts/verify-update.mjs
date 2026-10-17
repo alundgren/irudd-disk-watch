@@ -74,14 +74,14 @@ try {
   app = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`], env })
   await app.firstWindow()
   const oldPid = app.process().pid
-  const modulePath = pathToFileURL(resolve('dist/update-smoke/app-updates.mjs')).href
+  const modulePath = resolve('dist/update-smoke/app-updates.cjs')
   const closed = app.waitForEvent('close', { timeout: 120_000 })
   await app.evaluate(
     async ({ app }, data) => {
-      const fs = await import('node:fs')
-      const path = await import('node:path')
-      const crypto = await import('node:crypto')
-      const { AppUpdates } = await import(data.modulePath)
+      const fs = process.getBuiltinModule('fs')
+      const path = process.getBuiltinModule('path')
+      const crypto = process.getBuiltinModule('crypto')
+      const { AppUpdates } = process.getBuiltinModule('module').createRequire(data.modulePath)(data.modulePath)
       const repo = 'alundgren/irudd-disk-watch'
       const names = [
         'Disk-Watch-mac-arm64.tar.gz',

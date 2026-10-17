@@ -6,7 +6,7 @@ await build({
     target: 'node22',
     outDir: 'dist/update-smoke',
     emptyOutDir: true,
-    lib: { entry: 'src/main/appUpdates.ts', formats: ['es'], fileName: () => 'app-updates.mjs' },
+    lib: { entry: 'src/main/appUpdates.ts', formats: ['cjs'], fileName: () => 'app-updates.cjs' },
     rollupOptions: { external: (id) => id.startsWith('node:') },
   },
 })
