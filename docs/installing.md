@@ -44,7 +44,7 @@ The normal profile is `~/Library/Application Support/disk-watch` on Mac and `%AP
 
 # Release maintainers
 
-Set `package.json` to the stable version and create the matching `v<version>` tag only after review and approval. The tag workflow builds the two app assets and native x64/ARM64 musl scanners, checks their ELF dependencies, runs candidate smoke tests and generates SHA256SUMS over the exact four files. Publication waits for every build/check job. It creates a draft, verifies the uploaded asset set, then publishes. An existing release causes failure; no asset overwrite or release replacement is attempted. An interrupted draft requires maintainer inspection before retrying. No tag or release is created by ordinary PR builds.
+Set `package.json` to the stable version and create the matching `v<version>` tag only after review and approval. The tag workflow builds the two app assets and native x64/ARM64 musl scanners, checks their ELF dependencies and generates SHA256SUMS over the exact four files. Publication waits for both platform build jobs. GitHub Actions is release-only and runs no tests, smoke tests, GUI verification or standalone typechecks. Run those checks outside Actions before approving a release. It creates a draft, verifies the uploaded asset set, then publishes. An existing release causes failure; no asset overwrite or release replacement is attempted. An interrupted draft requires maintainer inspection before retrying. Pull requests and branch pushes do not run GitHub Actions.
 
 # Private repository access
 

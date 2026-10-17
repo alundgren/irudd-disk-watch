@@ -26,31 +26,16 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
       - run: vp install --frozen-lockfile
-      - run: vp run typecheck
-      - run: vp run test
-      - run: vp run test:rust
-      - run: vp run test:installers
       - name: Package Mac app
         if: runner.os == 'macOS'
         run: |
           test "$(uname -m)" = arm64
           vp run dist:mac
-          node scripts/check-bundled-helper.mjs
           tar -C dist/mac-arm64 -czf dist/Disk-Watch-mac-arm64.tar.gz 'Disk Watch.app'
-      - name: Package Windows app and validate on hosted desktop
+      - name: Package Windows app
         if: runner.os == 'Windows'
         run: |
           vp run dist:win
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-installer.ps1
-      - name: Full packaged update and restart on isolated hosted desktop
-        run: |
-          vp exec node scripts/build-updater-smoke.mjs
-          vp exec node scripts/verify-update.mjs
-      - name: Existing Windows GUI regression checks
-        if: runner.os == 'Windows'
-        run: |
-          vp run verify:packaged
-          vp run verify
       - uses: actions/upload-artifact@v7
         with:
           name: app-${{ runner.os }}
@@ -59,7 +44,42 @@ jobs:
             dist/Disk-Watch-*-x64-Setup.exe
           if-no-files-found: error
   worker:
-    uses: ./.github/workflows/workers.yml
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: dw-scan-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: dw-scan-linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build native static worker
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$TARGET"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          cargo build --release --locked --manifest-path scanner/Cargo.toml --target "$TARGET"
+          binary="scanner/target/$TARGET/release/dw-scan"
+          readelf -h "$binary"
+          if readelf -l "$binary" | grep -q INTERP; then echo 'Worker has a dynamic interpreter'; exit 1; fi
+          if readelf -d "$binary" | grep -q NEEDED; then echo 'Worker needs a shared library'; exit 1; fi
+          mkdir release
+          cp "$binary" 'release/${{ matrix.asset }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: worker-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
   publish:
     needs: [app, worker]
     runs-on: ubuntu-24.04

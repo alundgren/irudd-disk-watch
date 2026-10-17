@@ -28,7 +28,7 @@ The checkboxes beside tracked roots choose which roots **Scan selected** and **Q
 
 ## Build and run from source
 
-For an installed Windows app, download the x64 Setup executable from a successful Windows workflow artifact and run it. It installs for your user, adds Disk Watch to Start search, and does not create a desktop shortcut or launch the app automatically. The build is unsigned, so Windows may show an unknown-publisher warning. Existing scans remain in `%APPDATA%\disk-watch`.
+For an installed Windows app, download the x64 Setup executable from a published release and run it. It installs for your user, adds Disk Watch to Start search, and does not create a desktop shortcut or launch the app automatically. The build is unsigned, so Windows may show an unknown-publisher warning. Existing scans remain in `%APPDATA%\disk-watch`.
 
 To build and install it locally:
 
@@ -47,7 +47,7 @@ Install an existing build without rebuilding:
 vp run install:local -SkipBuild -Installer "dist\Disk-Watch-0.1.0-x64-Setup.exe"
 ```
 
-The install script also accepts an absolute `-InstallDirectory`. `vp run verify:packaged` tests the unpacked executable, its bundled scanner, branding and a real fixture scan in a hidden window with isolated temporary data. Append another executable path to test an installed copy. The Windows workflow runs the full checks and retains the installer artifact for seven days.
+The install script also accepts an absolute `-InstallDirectory`. `vp run verify:packaged` tests the unpacked executable, its bundled scanner, branding and a real fixture scan in a hidden window with isolated temporary data. Append another executable path to test an installed copy. Run GUI verification only in an isolated graphical session. GitHub Actions is release-only and does not run tests.
 
 To run from source:
 
@@ -72,7 +72,7 @@ Build a personal unsigned Mac ARM64 app without launching or installing it:
 vp run dist:mac
 ```
 
-The result is `dist/mac-arm64/Disk Watch.app`. The native `dw-scan` executable is bundled outside the ASAR archive in `Contents/Resources`, and the icon is generated from the existing artwork with the macOS `sips` and `iconutil` tools. This build is not signed or notarized. It does not replace an installed app. The Native workflow builds the app on an ARM64 Mac runner and uploads an archive that retains executable permissions.
+The result is `dist/mac-arm64/Disk Watch.app`. The native `dw-scan` executable is bundled outside the ASAR archive in `Contents/Resources`, and the icon is generated from the existing artwork with the macOS `sips` and `iconutil` tools. This build is not signed or notarized. It does not replace an installed app. The release workflow builds the app on an ARM64 Mac runner and publishes an archive that retains executable permissions.
 
 Build and reinstall the Mac app at a stable path for Spotlight and Full Disk Access:
 
