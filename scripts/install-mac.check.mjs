@@ -152,3 +152,29 @@ test('a concurrent install lock leaves the existing app untouched', mac, async (
   await assert.rejects(() => installBundle(source, directory, { register: false }), /Another install/)
   assert.equal(existsSync(join(directory, 'Disk Watch.app/Contents/Info.plist')), true)
 })
+
+test('a failure after final verification restores the previous app', async (t) => {
+  const root = fixture(t)
+  const candidate = join(root, 'candidate'),
+    target = join(root, 'target'),
+    previous = join(root, 'previous')
+  mkdirSync(candidate)
+  mkdirSync(target)
+  writeFileSync(join(target, 'sentinel'), 'keep')
+  const { renameSync } = await import('node:fs')
+  await assert.rejects(
+    () =>
+      replaceBundle(
+        candidate,
+        target,
+        previous,
+        () => {},
+        renameSync,
+        () => {
+          throw new Error('registration failure')
+        },
+      ),
+    /registration failure/,
+  )
+  assert.equal(readFileSync(join(target, 'sentinel'), 'utf8'), 'keep')
+})

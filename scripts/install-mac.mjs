@@ -181,16 +181,18 @@ export async function installBundle(source, directory, { register = true, signin
         verifySigner(candidate, identity)
       }
       assertStopped(target)
-      await replaceBundle(candidate, target, previous, validateBundle)
+      await replaceBundle(candidate, target, previous, validateBundle, renameSync, () => {
+        if (identity) verifySigner(target, identity)
+        if (register) {
+          run(registrationTool, ['-f', target])
+          run('/usr/bin/mdimport', ['-i', target])
+        }
+      })
       installed = true
     } finally {
       // Retain the old app if restoring it failed, so a failed update cannot erase it.
       if (installed || !exists(previous)) rmSync(staging, { recursive: true, force: true })
       else console.error(`The previous app is preserved at ${previous}`)
-    }
-    if (register) {
-      run(registrationTool, ['-f', target])
-      run('/usr/bin/mdimport', ['-i', target])
     }
     if (identity) console.log(`Signed with certificate: ${identity}`)
     return target
@@ -199,7 +201,7 @@ export async function installBundle(source, directory, { register = true, signin
   }
 }
 
-export async function replaceBundle(candidate, target, previous, validate, rename = renameSync) {
+export async function replaceBundle(candidate, target, previous, validate, rename = renameSync, finalize = () => {}) {
   let backedUp = false
   if (exists(target)) {
     validate(target)
@@ -209,6 +211,7 @@ export async function replaceBundle(candidate, target, previous, validate, renam
   try {
     rename(candidate, target)
     validate(target)
+    finalize()
   } catch (error) {
     // The candidate can have arrived before a final verification fails.
     if (exists(target)) rmSync(target, { recursive: true, force: true })

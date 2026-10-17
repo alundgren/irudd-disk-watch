@@ -10,16 +10,17 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 test('release manifest requires the exact assets and refuses to overwrite an existing manifest', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'disk-watch-manifest-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   const names = [
     'Disk-Watch-mac-arm64.tar.gz',
-    'Disk-Watch-0.2.0-x64-Setup.exe',
+    `Disk-Watch-${version}-x64-Setup.exe`,
     'dw-scan-linux-x64',
     'dw-scan-linux-arm64',
   ]
   const run = () =>
     spawnSync(process.execPath, [join(root, 'scripts/release-manifest.mjs'), directory], {
       encoding: 'utf8',
-      env: { ...process.env, GITHUB_REF_NAME: 'v0.2.0' },
+      env: { ...process.env, GITHUB_REF_NAME: `v${version}` },
     })
   for (const name of names.slice(1)) writeFileSync(join(directory, name), 'fixture')
   assert.notEqual(run().status, 0)
