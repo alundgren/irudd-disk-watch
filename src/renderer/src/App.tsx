@@ -273,6 +273,7 @@ export function App() {
     const box = menuElement.current.getBoundingClientRect()
     menuElement.current.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8))}px`
     menuElement.current.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - box.height - 8))}px`
+    menuElement.current.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
   }, [menu])
 
   const addDisk = () => setChooser({ source: 'local' })
@@ -925,7 +926,7 @@ export function App() {
             }
           }}
         >
-          <button role="menuitem" autoFocus onClick={() => void showFromMenu()}>
+          <button role="menuitem" onClick={() => void showFromMenu()}>
             {isHistorical(menu.owner.page.disk) || menu.owner.page.disk.machine?.kind === 'ssh'
               ? 'Copy path'
               : isWindows(menu.owner.page.disk)
