@@ -1,6 +1,6 @@
 # Install, update and remove Disk Watch
 
-Disk Watch 0.2.0 releases provide a macOS ARM64 app, a Windows x64 installer and two raw Linux scanners. The installers download the latest stable version from `alundgren/irudd-disk-watch`, verify its SHA256SUMS, and keep app data separate. The installed machine needs no Node, Rust, Git or source checkout. The scripts become usable once the first release is published. This change does not publish a release.
+Disk Watch 0.2.0 releases provide a macOS ARM64 app, a Windows x64 installer and two raw Linux scanners. The installers download the latest stable version from `alundgren/irudd-disk-watch`, verify its SHA256SUMS, and keep app data separate. The installed machine needs no Node, Rust, Git or source checkout. Merge the reviewed main PR before using the main-branch bootstrap URLs. Then an approved matching version tag must finish its release workflow. The scripts become usable once that first release is published. This change does not publish a release.
 
 On an Apple Silicon Mac, run as your normal account, without sudo:
 
@@ -28,7 +28,7 @@ App updates show the running version and the latest stable release. Check for up
 
 The updater verifies the downloaded asset, stages it in a private cache outside the installed app, and checks it again before handoff. The detached updater waits up to two minutes for the old PID to exit. On Mac, the system shell invokes the verified candidate's runtime and copied bundled helper, then opens the installed app only after success. Windows uses system PowerShell and NSIS. Both preserve a custom `--user-data-dir` profile. Development and unmanaged copies show installation guidance.
 
-If the app does not reopen, open it manually from its stable installed path. Inspect `update.log` in the `disk-watch-updates/update-*` directory under the app cache selected by the main process. Failed installs preserve the old app or retain a recovery backup. Successful update stages are retained for diagnostics and may be deleted after quitting the app and confirming the new version works.
+If the app does not reopen, open it manually from its stable installed path. Inspect `update.log` in the `updates/update-*` directory under your app profile when using the standard integration. The main process may choose another private update cache. Failed installs preserve the old app or retain a recovery backup. Successful update stages are retained for diagnostics and may be deleted after quitting the app and confirming the new version works.
 
 # Linux scanner compatibility
 
