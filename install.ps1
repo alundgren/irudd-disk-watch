@@ -84,7 +84,8 @@ function Save-DiskWatchDownload([string]$Url, [string]$File, [long]$Limit) {
   Add-Type -AssemblyName System.Net.Http
   $client = New-Object Net.Http.HttpClient
   $client.DefaultRequestHeaders.UserAgent.ParseAdd('Disk-Watch/0.2.0')
-  $client.DefaultRequestHeaders.Accept.ParseAdd('application/octet-stream')
+  if (([Uri]$Url).Host -eq 'api.github.com' -and -not ([Uri]$Url).AbsolutePath.Contains('/releases/assets/')) { $client.DefaultRequestHeaders.Accept.ParseAdd('application/vnd.github+json') }
+  else { $client.DefaultRequestHeaders.Accept.ParseAdd('application/octet-stream') }
   if ($env:DISK_WATCH_GITHUB_TOKEN -and ([Uri]$Url).Host -eq 'api.github.com') { $client.DefaultRequestHeaders.Authorization = New-Object Net.Http.Headers.AuthenticationHeaderValue('Bearer', $env:DISK_WATCH_GITHUB_TOKEN) }
   $cancel = New-Object Threading.CancellationTokenSource
   $cancel.CancelAfter(180000)
