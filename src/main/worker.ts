@@ -17,6 +17,14 @@ export interface WorkerConnection {
   stateDir?: string
 }
 
+export function workerEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env }
+  // SSH may have user-configured SendEnv rules. Release credentials belong only to the desktop downloader.
+  for (const name of Object.keys(environment))
+    if (name.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN') delete environment[name]
+  return environment
+}
+
 /** Linux workers built before per-folder trust checks refuse most real roots, such as `/`. */
 export const LINUX_WORKER_UPDATE =
   'The Linux worker on this machine is out of date, so deletion is unavailable. Open Settings for this root, choose Install or update scanner, then scan again.'
@@ -126,6 +134,7 @@ export async function* workerFrames(
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     shell: false,
+    env: workerEnvironment(),
   })
   let diagnostic = Buffer.alloc(0)
   let inputError: Error | undefined

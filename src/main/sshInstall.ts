@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type { Machine, WorkerInfo } from '../shared/types'
 import { decodeFrame, framedLines, MAX_DIAGNOSTIC_BYTES, workerInfo } from '../shared/workerProtocol'
-import { bindWorker, sshArguments, workerOperation } from './worker'
+import { bindWorker, sshArguments, workerEnvironment, workerOperation } from './worker'
 
 export interface RemoteScanner {
   arch: 'x64' | 'arm64'
@@ -37,6 +37,7 @@ kernel=$(uname -r)
 major=\${kernel%%.*}; minor=\${kernel#*.}; minor=\${minor%%.*}
 case "$major:$minor" in *[!0-9:]*) fail 'Could not determine the Linux kernel version.';; esac
 [ "$major" -gt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -ge 14 ]; } || fail 'The scanner requires Linux 4.14 or later.'
+[ -r /proc/self/mountinfo ] && [ -d /proc/self/fdinfo ] || fail 'The scanner requires a mounted /proc filesystem.'
 uid=$(id -u)
 case "$HOME" in /*) ;; *) fail 'The SSH account has no absolute home directory.';; esac
 [ "$HOME" != / ] || fail 'The SSH home directory must not be /.'
@@ -68,7 +69,11 @@ check_worker
 export async function probeRemoteScanner(destination: string): Promise<RemoteScanner> {
   const script = `${remoteInstallChecks}\nprintf '%s\\n%s\\n' "$arch" "$current"`
   const invocation = command(destination, script)
-  const child = spawn(invocation.executable, invocation.args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+  const child = spawn(invocation.executable, invocation.args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: workerEnvironment(),
+  })
   let output = ''
   let diagnostic = ''
   let timedOut = false
@@ -175,7 +180,11 @@ export async function installRemoteScanner(
   }
   const digest = createHash('sha256').update(binary).digest('hex')
   const invocation = command(destination, remoteInstallScript(observed.arch, binary.length, digest, observed.sha256))
-  const child = spawn(invocation.executable, invocation.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  const child = spawn(invocation.executable, invocation.args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: workerEnvironment(),
+  })
   let diagnostic = ''
   let inputError: Error | undefined
   child.stdin.on('error', (error) => {

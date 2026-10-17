@@ -2,10 +2,22 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, test as platformTest } from 'vite-plus/test'
-import { LINUX_WORKER_UPDATE, sshArguments, workerOperation, WorkerRequestNotSent } from './worker'
+import { LINUX_WORKER_UPDATE, sshArguments, workerEnvironment, workerOperation, WorkerRequestNotSent } from './worker'
 
 const test = process.platform === 'win32' ? platformTest.skip : platformTest
 const owned: string[] = []
+
+platformTest('scanner subprocesses cannot inherit the desktop release token', () => {
+  const previous = process.env.DISK_WATCH_GITHUB_TOKEN
+  try {
+    process.env.DISK_WATCH_GITHUB_TOKEN = 'fixture-private-release-access'
+    expect(workerEnvironment().DISK_WATCH_GITHUB_TOKEN).toBeUndefined()
+    expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('fixture-private-release-access')
+  } finally {
+    if (previous === undefined) delete process.env.DISK_WATCH_GITHUB_TOKEN
+    else process.env.DISK_WATCH_GITHUB_TOKEN = previous
+  }
+})
 afterEach(() => {
   for (const directory of owned.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
