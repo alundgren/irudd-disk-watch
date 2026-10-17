@@ -116,6 +116,7 @@ export interface Disk {
   machine?: Machine
   targetOS?: TargetOS
   nativeRoot?: NativeRoot | null
+  scanIncluded?: boolean
   cleanupEnabled?: boolean
   excludeRules?: PathRule[]
   id: number
@@ -277,7 +278,7 @@ export interface DeleteResult {
   failed: DeleteFailure[]
 }
 
-/** One click scans every tracked disk in turn. `index` counts from 0. */
+/** One click scans each selected live root in turn. `index` counts from 0. */
 export type ScanProgress = { diskId: number; index: number; count: number } & (
   | { phase: 'starting' }
   | { phase: 'reading'; files: number; dirs: number; bytes: number }
@@ -304,6 +305,7 @@ export interface DiskWatchApi {
   recoverDelete(operationId: string): Promise<DeleteResult>
   listDisks(): Promise<Disk[]>
   removeDisk(diskId: number): Promise<void>
+  setScanIncluded(diskId: number, included: boolean): Promise<void>
   pickExclude(diskId: number, kind: 'file' | 'dir'): Promise<string | null>
   setExcludes(diskId: number, paths: string[]): Promise<void>
   addExclude(diskId: number, path: string): Promise<void>

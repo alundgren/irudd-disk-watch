@@ -14,7 +14,18 @@ import type {
   TreeRow,
   ViewTotal,
 } from '../../shared/types'
-import { api, formatBytes, formatCount, formatWhen, isWindows, isHistorical, canCleanup, machineLabel } from './api'
+import {
+  api,
+  formatBytes,
+  formatCount,
+  formatWhen,
+  isWindows,
+  isHistorical,
+  canCleanup,
+  cleanupScanProblem,
+  machineLabel,
+} from './api'
+import { DELETE_SCAN_MAX_AGE_MS } from '../../shared/scanFreshness'
 import { ChangesView } from './ChangesView'
 import { DeleteFailureDialog } from './DeleteFailureDialog'
 import { HideDialog } from './HideDialog'
@@ -73,6 +84,31 @@ export function App() {
   const [operations, setOperations] = useState<Record<number, DeleteOperation[]>>({})
   const [recovering, setRecovering] = useState<string | null>(null)
   const [disks, setDisks] = useState<Disk[]>([])
+  const [selectionSaving, setSelectionSaving] = useState(false)
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    let timer: number | undefined
+    const tick = () => {
+      const time = Date.now()
+      setNow(time)
+      const remaining = disks.flatMap((disk) => {
+        const expiry = (disk.latestScan?.startedAt ?? NaN) + DELETE_SCAN_MAX_AGE_MS + 1
+        return Number.isFinite(expiry) && expiry > time ? [expiry - time] : []
+      })
+      // Check exact expiry, and also recover from clock changes or a suspended computer.
+      timer = window.setTimeout(tick, Math.min(30_000, ...remaining))
+    }
+    const wake = () => {
+      window.clearTimeout(timer)
+      tick()
+    }
+    tick()
+    window.addEventListener('focus', wake)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('focus', wake)
+    }
+  }, [disks])
   const [page, setPage] = useState<Page | null>(null)
   const [navigation, setNavigation] = useState<Navigation>({ status: 'ready' })
   const [progress, setProgress] = useState<ScanProgress | null>(null)
@@ -253,12 +289,33 @@ export function App() {
       report(error)
     }
   }
+  const setScanIncluded = async (diskId: number, included: boolean) => {
+    setSelectionSaving(true)
+    try {
+      await api.setScanIncluded(diskId, included)
+      setDisks((current) => current.map((disk) => (disk.id === diskId ? { ...disk, scanIncluded: included } : disk)))
+      setPage((current) =>
+        current?.disk.id === diskId ? { ...current, disk: { ...current.disk, scanIncluded: included } } : current,
+      )
+    } catch (error) {
+      report(error)
+    } finally {
+      setSelectionSaving(false)
+    }
+  }
   const needsRecovery = (diskId: number) =>
     operations[diskId] === undefined ||
     operations[diskId]!.some((operation) => operation.createdAt >= (verifiedScans[diskId] ?? 0))
   const toggleDelete = async (diskId: number, item: { nodeId: number }) => {
     const owner = disks.find((disk) => disk.id === diskId)
-    if (deletingRef.current || !owner || !canCleanup(owner) || (!isWindows(owner) && needsRecovery(diskId))) return
+    if (
+      deletingRef.current ||
+      !owner ||
+      !canCleanup(owner) ||
+      cleanupScanProblem(owner) ||
+      (!isWindows(owner) && needsRecovery(diskId))
+    )
+      return
     const key = `${diskId}:${item.nodeId}`
     if (staging.current.has(key)) {
       staging.current.delete(key)
@@ -293,6 +350,8 @@ export function App() {
     if (!owner) return 'This root is no longer tracked.'
     if (isHistorical(owner)) return 'Saved history cannot delete files.'
     if (!canCleanup(owner)) return 'Deletion is off for this root. Turn it on in Settings.'
+    const freshness = cleanupScanProblem(owner, now)
+    if (freshness) return freshness
     if (!isWindows(owner) && operations[diskId] === undefined) return 'Checking earlier deletions…'
     if (!isWindows(owner) && needsRecovery(diskId))
       return 'An earlier deletion needs a status check and a fresh scan first.'
@@ -319,15 +378,18 @@ export function App() {
     const userStop = 'Stopped before every item was queued.'
     let stopped: string | undefined
     const live = () => {
+      const current = disksRef.current.find((disk) => disk.id === diskId)
       stopped ??= signal.aborted
         ? userStop
         : deletingRef.current
           ? 'Stopped because a deletion started.'
           : staging.current.get(key) !== action
             ? 'Stopped because the queue was cleared or the view changed.'
-            : disksRef.current.find((disk) => disk.id === diskId)?.latestScan?.id !== scanId
+            : current?.latestScan?.id !== scanId
               ? 'Stopped because a newer scan finished. Filter again to queue from it.'
-              : undefined
+              : current && cleanupScanProblem(current)
+                ? 'Stopped because the scan expired. Scan this root again before queueing more items.'
+                : undefined
       return !stopped
     }
     const index = new QueueIndex(stagedRef.current[diskId] ?? [])
@@ -402,6 +464,7 @@ export function App() {
       progress ||
       !owner ||
       !canCleanup(owner) ||
+      cleanupScanProblem(owner) ||
       (!isWindows(owner) && needsRecovery(diskId))
     )
       return
@@ -553,7 +616,9 @@ export function App() {
   const disk = page?.disk
   const staged = useMemo(() => (disk ? (stagedByDisk[disk.id] ?? []) : []), [disk, stagedByDisk])
   const unresolved = disk && !isWindows(disk) ? (operations[disk.id] ?? []) : []
-  const deletionBlocked = !disk || !canCleanup(disk) || (disk && !isWindows(disk) && needsRecovery(disk.id))
+  const freshnessProblem = disk ? cleanupScanProblem(disk, now) : null
+  const deletionBlocked =
+    !disk || !canCleanup(disk) || !!freshnessProblem || (disk && !isWindows(disk) && needsRecovery(disk.id))
   const stagedSummary = useMemo(() => summarizeStaged(staged), [staged])
   const staleQueue = staged.some((item) => item.scanId !== disk?.latestScan?.id)
   const complete = page?.scans.filter((scan) => scan.status === 'complete') ?? []
@@ -566,42 +631,22 @@ export function App() {
             disks={disks}
             progress={progress}
             deleting={deleting}
+            selectionSaving={selectionSaving}
             elevated={elevated}
             onError={(text) => setNotice({ text })}
           />
         )}
         <ul className="disks">
           {disks.map((d) => (
-            <li key={d.id}>
-              <button
-                className={d.id === disk?.id ? 'disk selected' : 'disk'}
-                onClick={() => navigate({ diskId: d.id, tab: page?.tab ?? 'space' })}
-              >
-                <span className="disk-root">{d.root}</span>
-                <span className="muted small">
-                  {machineLabel(d)}
-                  {isHistorical(d) ? ' · saved history' : ''}
-                </span>
-                {d.capacity && (
-                  <span
-                    className="capacity"
-                    title={`${formatBytes(d.capacity.free)} free of ${formatBytes(d.capacity.total)}${d.nativeRoot ? ` · observed ${formatWhen(d.nativeRoot.observedAt)}, may be stale` : ''}`}
-                  >
-                    <span style={{ width: `${(1 - d.capacity.free / d.capacity.total) * 100}%` }} />
-                  </span>
-                )}
-                <span className="muted small">
-                  {d.capacity
-                    ? `${formatBytes(d.capacity.free)} free${d.nativeRoot ? ' at last observation' : ''} · `
-                    : ''}
-                  {progress?.diskId === d.id
-                    ? 'scanning now'
-                    : d.latestScan
-                      ? `scanned ${formatWhen(d.latestScan.startedAt)}`
-                      : 'never scanned'}
-                </span>
-              </button>
-            </li>
+            <RootScanRow
+              key={d.id}
+              disk={d}
+              selected={d.id === disk?.id}
+              scanning={progress?.diskId === d.id}
+              disabled={selectionSaving || progress !== null || deleting}
+              onNavigate={() => navigate({ diskId: d.id, tab: page?.tab ?? 'space' })}
+              onScanIncluded={(included) => void setScanIncluded(d.id, included)}
+            />
           ))}
         </ul>
         <button className="add-disk" onClick={addDisk}>
@@ -724,6 +769,7 @@ export function App() {
                   freed space can differ.
                   {stagedSummary.partial && ' Some items were queued from a partial scan, so freed space may differ.'}
                   {staleQueue && ' Scan changed. Remove and restage queued items.'}
+                  {freshnessProblem && ` ${freshnessProblem}`}
                 </p>
                 {showQueue && (
                   <ul className="plain-list staged-list">
@@ -788,7 +834,7 @@ export function App() {
                 onError={report}
               />
             ) : complete.length === 0 ? (
-              <p className="empty">No scans yet. Use Scan all drives to see what takes up the space.</p>
+              <p className="empty">No scans yet. Use Scan selected to see what takes up the space.</p>
             ) : page.tab === 'space' ? (
               <SpaceView
                 key={page.disk.id}
@@ -899,7 +945,7 @@ export function App() {
           {menu.target.canDelete &&
             menu.target.kind &&
             canCleanup(menu.owner.page.disk) &&
-            (isWindows(menu.owner.page.disk) || !needsRecovery(menu.owner.diskId)) && (
+            !queueBlocked(menu.owner.diskId) && (
               <button role="menuitem" className="danger-quiet" onClick={queueFromMenu}>
                 {staged.some((item) => item.nodeId === menu.target.nodeId)
                   ? 'Remove from delete queue'
@@ -920,8 +966,7 @@ export function App() {
           {menu.target.canDelete &&
             menu.target.kind &&
             canCleanup(menu.owner.page.disk) &&
-            !isWindows(menu.owner.page.disk) &&
-            needsRecovery(menu.owner.diskId) && (
+            queueBlocked(menu.owner.diskId) && (
               <button role="menuitem" aria-disabled="true" className="menu-unavailable">
                 Queue for deletion
                 <span className="small">{queueBlocked(menu.owner.diskId)}</span>
@@ -972,15 +1017,67 @@ export function App() {
   )
 }
 
+export function RootScanRow({
+  disk: d,
+  selected,
+  scanning,
+  disabled,
+  onNavigate,
+  onScanIncluded,
+}: {
+  disk: Disk
+  selected: boolean
+  scanning: boolean
+  disabled: boolean
+  onNavigate(): void
+  onScanIncluded(included: boolean): void
+}) {
+  return (
+    <li className="disk-row">
+      {!isHistorical(d) && (
+        <input
+          className="scan-checkbox"
+          type="checkbox"
+          aria-label={`Include ${d.root} on ${machineLabel(d)} in scans`}
+          checked={d.scanIncluded !== false}
+          disabled={disabled}
+          onChange={(event) => onScanIncluded(event.target.checked)}
+        />
+      )}
+      <button className={selected ? 'disk selected' : 'disk'} onClick={onNavigate}>
+        <span className="disk-root">{d.root}</span>
+        <span className="muted small">
+          {machineLabel(d)}
+          {isHistorical(d) ? ' · saved history' : ''}
+        </span>
+        {d.capacity && (
+          <span
+            className="capacity"
+            title={`${formatBytes(d.capacity.free)} free of ${formatBytes(d.capacity.total)}${d.nativeRoot ? ` · observed ${formatWhen(d.nativeRoot.observedAt)}, may be stale` : ''}`}
+          >
+            <span style={{ width: `${(1 - d.capacity.free / d.capacity.total) * 100}%` }} />
+          </span>
+        )}
+        <span className="muted small">
+          {d.capacity ? `${formatBytes(d.capacity.free)} free${d.nativeRoot ? ' at last observation' : ''} · ` : ''}
+          {scanning ? 'scanning now' : d.latestScan ? `scanned ${formatWhen(d.latestScan.startedAt)}` : 'never scanned'}
+        </span>
+      </button>
+    </li>
+  )
+}
+
 interface ScanPanelProps {
   disks: Disk[]
   progress: ScanProgress | null
   elevated: boolean
   deleting: boolean
+  selectionSaving?: boolean
   onError(text: string): void
 }
 
-function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelProps) {
+export function ScanPanel({ disks, progress, elevated, deleting, selectionSaving, onError }: ScanPanelProps) {
+  const selected = disks.some((disk) => !isHistorical(disk) && disk.scanIncluded !== false)
   const restart = () => api.restartElevated().catch((err: unknown) => onError(errorText(err)))
   if (progress) {
     const root = disks.find((d) => d.id === progress.diskId)?.root ?? ''
@@ -1007,18 +1104,19 @@ function ScanPanel({ disks, progress, elevated, deleting, onError }: ScanPanelPr
     <div className="scan-panel">
       <button
         className="primary"
-        disabled={deleting || disks.every(isHistorical)}
+        disabled={deleting || selectionSaving || !selected}
         onClick={() => api.startScan().catch((err: unknown) => onError(errorText(err)))}
       >
-        Scan all drives
+        Scan selected
       </button>
+      {!selected && <p className="muted small">Select a root using its checkbox to scan.</p>}
       {disks.some(
         (disk) =>
           disk.machine?.kind === 'local' && disk.machine.os === 'macos' && disk.nativeRoot?.filesystem === 'apfs',
       ) && (
         <button
-          disabled={deleting}
-          title="Reuses unchanged Mac folders. The first quick scan builds a baseline; other drives receive a full scan. Use Scan all drives to read every folder again."
+          disabled={deleting || selectionSaving || !selected}
+          title="Scans selected roots. Reuses unchanged Mac folders. The first quick scan builds a baseline; other drives receive a full scan. Use Scan selected to read every folder again."
           onClick={() => api.startScan('incremental').catch((err: unknown) => onError(errorText(err)))}
         >
           Quick scan (experimental)

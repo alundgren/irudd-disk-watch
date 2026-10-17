@@ -1,3 +1,4 @@
+import { isScanFreshForDeletion } from '../shared/scanFreshness.ts'
 import { DatabaseSync } from 'node:sqlite'
 import {
   canonicalPath,
@@ -116,7 +117,7 @@ const NTFS_METADATA: [string, NodeKind][] = [
   ['$Extend', 'dir'],
 ]
 
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 /** Space shows at most this many filter matches, largest first. */
 export const SEARCH_LIMIT = 1000
 export const LEGACY_WINDOWS_MACHINE_ID = 'legacy-windows'
@@ -222,6 +223,8 @@ export function openDb(file: string): DatabaseSync {
       if (applied < 5) db.exec('ALTER TABLE disk ADD COLUMN root_refresh_scan INTEGER NOT NULL DEFAULT 0')
       // Read errors at or under a native entry. NULL means the worker did not report it.
       if (applied < 6) db.exec('ALTER TABLE entry ADD COLUMN subtree_errors INTEGER')
+      if (applied < 7)
+        db.exec('ALTER TABLE disk ADD COLUMN scan_included INTEGER NOT NULL DEFAULT 1 CHECK(scan_included IN (0,1))')
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
       if (db.prepare('PRAGMA foreign_key_check').all().length)
         throw new Error('History contains invalid ownership references.')
@@ -289,6 +292,7 @@ export interface DiskRow {
   targetOS: TargetOS
   nativeRoot: NativeRoot | null
   cleanupEnabled: boolean
+  scanIncluded: boolean
 }
 
 export class Store {
@@ -383,6 +387,7 @@ export class Store {
   }
 
   getDisk(diskId: number): DiskRow {
+    if (!Number.isSafeInteger(diskId) || diskId <= 0) throw new Error('Invalid root ID.')
     const row = this.db.prepare('SELECT * FROM disk WHERE id=?').get(diskId)
     if (!row) throw new Error(`No disk ${diskId}`)
     const machine = this.getMachine(String(row.machine_id))
@@ -395,7 +400,30 @@ export class Store {
       targetOS: machine.os,
       nativeRoot: row.native_root ? JSON.parse(String(row.native_root)) : null,
       cleanupEnabled: !!row.cleanup_enabled,
+      scanIncluded: row.scan_included === 1,
     }
+  }
+
+  setScanIncluded(diskId: number, included: boolean): void {
+    if (typeof included !== 'boolean') throw new Error('Invalid scan preference.')
+    const disk = this.getDisk(diskId)
+    if (disk.machine.kind === 'historical') throw new Error('Saved history cannot be scanned.')
+    this.db.prepare('UPDATE disk SET scan_included=? WHERE id=?').run(included ? 1 : 0, diskId)
+  }
+
+  selectedScanDisks(): DiskRow[] {
+    return this.listDisks().filter((disk) => disk.machine.kind !== 'historical' && disk.scanIncluded)
+  }
+
+  requireFreshDeleteScan(diskId: number, scanId?: number): ScanSummary {
+    const latest = this.latestCompleteScan(diskId)
+    if (scanId !== undefined && latest?.id !== scanId)
+      throw new Error('The queued scan changed. Scan this root again and restage its items.')
+    if (!isScanFreshForDeletion(latest))
+      throw new Error(
+        'Scan this root again before deleting. Deletion requires a completed scan started within the last hour.',
+      )
+    return latest!
   }
 
   addDisk(root: string, machineId = LEGACY_WINDOWS_MACHINE_ID): DiskRow {
@@ -827,8 +855,7 @@ export class Store {
     if (disk.targetOS !== 'windows' && location.components.length < 2)
       throw new Error('Root and top-level items cannot be deleted here.')
     const path = disk.targetOS === 'windows' ? deletePath(disk.root, location.path) : location.path
-    const latest = this.latestCompleteScan(diskId)
-    if (!latest) throw new Error('Scan this disk before staging deletion.')
+    const latest = this.requireFreshDeleteScan(diskId)
     if (disk.targetOS !== 'windows') {
       const gate = this.db.prepare('SELECT root_refresh_scan FROM disk WHERE id=?').get(diskId)!
       if (latest.id <= Number(gate.root_refresh_scan))
@@ -947,9 +974,9 @@ export class Store {
   }
 
   latestCompleteScan(diskId: number): ScanSummary | null {
-    const order = this.getDisk(diskId).targetOS === 'windows' ? 'started_at' : 'id'
+    this.getDisk(diskId)
     const row = this.db
-      .prepare(`SELECT * FROM scan WHERE disk_id = ? AND status = 'complete' ORDER BY ${order} DESC LIMIT 1`)
+      .prepare(`SELECT * FROM scan WHERE disk_id = ? AND status = 'complete' ORDER BY id DESC LIMIT 1`)
       .get(diskId)
     return row ? toScan(row as unknown as ScanRow) : null
   }

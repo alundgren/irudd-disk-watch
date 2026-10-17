@@ -51,7 +51,7 @@ function fixture() {
     const files = rows.find((row) => row[0] === disk.rootNode)![2]
     store.db
       .prepare("UPDATE scan SET status='complete',method='walk',started_at=?,size=?,files=?,dirs=5 WHERE id=?")
-      .run(time, size, files, id)
+      .run(Date.now() - 10_000 + time, size, files, id)
     for (const [nodeId, size, files] of rows)
       store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,?,?)').run(id, nodeId, size, files)
     return id
@@ -599,7 +599,9 @@ test('saved issue details retain real totals and failure messages with a bounded
 
 function nativeScan(store: Store, diskId: number, rootNode: number, file: number, time: number) {
   const id = store.beginScan(diskId, [])
-  store.db.prepare("UPDATE scan SET status='complete',started_at=?,size=10,files=1 WHERE id=?").run(time, id)
+  store.db
+    .prepare("UPDATE scan SET status='complete',started_at=?,size=10,files=1 WHERE id=?")
+    .run(Date.now() - 10_000 + time, id)
   const parent = Number(store.db.prepare('SELECT parent FROM node WHERE id=?').get(file)!.parent)
   for (const node of new Set([rootNode, parent, file]))
     store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,10,1)').run(id, node)
@@ -742,7 +744,9 @@ test('version five history gains unknown per-entry read error counts', () => {
     const disk = store.addDisk('C:\\')
     const scan = store.beginScan(disk.id, [])
     store.db.prepare('INSERT INTO entry(scan_id,node_id,size,files) VALUES(?,?,1,1)').run(scan, disk.rootNode)
-    store.db.exec('ALTER TABLE entry DROP COLUMN subtree_errors; PRAGMA user_version=5')
+    store.db.exec(
+      'ALTER TABLE entry DROP COLUMN subtree_errors; ALTER TABLE disk DROP COLUMN scan_included; PRAGMA user_version=5',
+    )
     store.db.close()
     const upgraded = new Store(openDb(file))
     expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })

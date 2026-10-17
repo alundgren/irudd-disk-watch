@@ -87,12 +87,17 @@ export function workerCommand(connection: WorkerConnection): { executable: strin
 const cleanupMutation = (op: WorkerOperation, parameters: Record<string, unknown>) =>
   op === 'delete' || (op === 'cleanup' && parameters.enabled === true)
 
-/** One owned subprocess per operation. Stdin remains a live control channel. */
+/**
+ * One owned subprocess per operation. Stdin remains a live control channel.
+ * beforeSend runs synchronously after any asynchronous preflight, just before writing the request.
+ * A rejected guard is reported as WorkerRequestNotSent, so callers can discard pending operations.
+ */
 export async function* workerFrames(
   connection: WorkerConnection,
   op: WorkerOperation,
   parameters: Record<string, unknown> = {},
   signal?: AbortSignal,
+  beforeSend?: () => void,
 ): AsyncGenerator<Exclude<WorkerFrame, { t: 'hello' }>> {
   if (signal?.aborted) throw new Error('Cancelled')
   const { machine } = connection
@@ -155,6 +160,11 @@ export async function* workerFrames(
   let sawHello = false
   let terminal = false
   try {
+    try {
+      beforeSend?.()
+    } catch (error) {
+      throw new WorkerRequestNotSent(error instanceof Error ? error.message : String(error))
+    }
     child.stdin.write(request)
     if (signal?.aborted) cancel()
     for await (const line of framedLines(child.stdout)) {
@@ -213,10 +223,11 @@ export async function workerOperation(
   op: Exclude<WorkerOperation, 'scan'>,
   parameters: Record<string, unknown> = {},
   signal?: AbortSignal,
+  beforeSend?: () => void,
 ): Promise<unknown> {
   let result: unknown
   let complete = false
-  for await (const frame of workerFrames(connection, op, parameters, signal)) {
+  for await (const frame of workerFrames(connection, op, parameters, signal, beforeSend)) {
     if (frame.t !== 'result') throw new Error('Unexpected worker operation response.')
     result = frame.value
     complete = true

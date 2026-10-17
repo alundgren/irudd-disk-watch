@@ -99,13 +99,13 @@ try {
         }
       })
     })
-    await page.getByRole('button', { name: 'Scan all drives' }).click()
+    await page.getByRole('button', { name: 'Scan selected' }).click()
     await page.waitForFunction(
       () => (window as unknown as { fixtureScanFinished: boolean }).fixtureScanFinished,
       undefined,
       { timeout: 60_000, polling: 100 },
     )
-    await page.getByRole('button', { name: 'Scan all drives' }).waitFor({ timeout: 60_000 })
+    await page.getByRole('button', { name: 'Scan selected' }).waitFor({ timeout: 60_000 })
     await page.getByText(/Loading (view|comparison)/).waitFor({ state: 'hidden' })
     const methods = await page.evaluate(async () =>
       (await window.diskWatch.listDisks()).map((disk) => disk.latestScan?.method),
@@ -896,7 +896,7 @@ try {
     })
   })
   await summary.getByRole('button', { name: 'Execute delete', exact: true }).click()
-  assert.equal(await page.getByRole('button', { name: 'Scan all drives', exact: true }).isDisabled(), true)
+  assert.equal(await page.getByRole('button', { name: 'Scan selected', exact: true }).isDisabled(), true)
   await diskButton(second).click()
   await page.locator('.disk-header h2').getByText(second, { exact: true }).waitFor()
   const failureDialog = page.getByRole('dialog', { name: 'Some paths could not be deleted' })
