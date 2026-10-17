@@ -1,0 +1,48 @@
+name: Static Linux workers
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: dw-scan-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: dw-scan-linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build native static worker
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$TARGET"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          cargo build --release --locked --manifest-path scanner/Cargo.toml --target "$TARGET"
+          binary="scanner/target/$TARGET/release/dw-scan"
+          readelf -h "$binary"
+          if readelf -l "$binary" | grep -q INTERP; then echo 'Worker has a dynamic interpreter'; exit 1; fi
+          if readelf -d "$binary" | grep -q NEEDED; then echo 'Worker needs a shared library'; exit 1; fi
+          python3 scanner/tests/worker_smoke.py "$binary"
+          mkdir release
+          cp "$binary" 'release/${{ matrix.asset }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: worker-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error

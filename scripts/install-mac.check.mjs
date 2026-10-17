@@ -13,7 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installBundle, selectSigningIdentity } from './install-mac.mjs'
+import { installBundle, replaceBundle, selectSigningIdentity } from './install-mac.mjs'
 
 const mac = { skip: process.platform !== 'darwin' }
 
@@ -57,7 +57,7 @@ test(
     assert.equal(existsSync(join(target, 'obsolete')), false)
     assert.equal(readFileSync(join(target, 'current'), 'utf8'), 'new')
     assert.equal(readFileSync(join(directory, 'unrelated'), 'utf8'), 'keep')
-    assert.deepEqual(readdirSync(directory).sort(), ['Disk Watch.app', 'unrelated'])
+    assert.deepEqual(readdirSync(directory).sort(), ['.disk-watch-managed', 'Disk Watch.app', 'unrelated'])
   },
 )
 
@@ -113,4 +113,42 @@ test('an unavailable signer fails before replacing the existing app', mac, async
     /not found/,
   )
   assert.equal(readFileSync(join(target, 'sentinel'), 'utf8'), 'keep')
+})
+
+test('replacement failure and post-replacement verification restore the previous app', async (t) => {
+  const root = fixture(t)
+  for (const failure of ['rename', 'verification']) {
+    const candidate = join(root, `candidate-${failure}`)
+    const target = join(root, `target-${failure}`)
+    const previous = join(root, `previous-${failure}`)
+    mkdirSync(candidate)
+    mkdirSync(target)
+    writeFileSync(join(candidate, 'sentinel'), 'new')
+    writeFileSync(join(target, 'sentinel'), 'old')
+    const { renameSync } = await import('node:fs')
+    const validate = (path) => {
+      if (failure === 'verification' && readFileSync(join(path, 'sentinel'), 'utf8') === 'new')
+        throw new Error('verification failure')
+    }
+    await assert.rejects(
+      () =>
+        replaceBundle(candidate, target, previous, validate, (from, to) => {
+          if (failure === 'rename' && from === candidate) throw new Error('rename failure')
+          renameSync(from, to)
+        }),
+      /failure/,
+    )
+    assert.equal(readFileSync(join(target, 'sentinel'), 'utf8'), 'old')
+  }
+})
+
+test('a concurrent install lock leaves the existing app untouched', mac, async (t) => {
+  const root = fixture(t)
+  const source = join(root, 'source.app')
+  const directory = join(root, 'Applications')
+  bundle(source)
+  bundle(join(directory, 'Disk Watch.app'))
+  mkdirSync(join(directory, '.disk-watch-install.lock'))
+  await assert.rejects(() => installBundle(source, directory, { register: false }), /Another install/)
+  assert.equal(existsSync(join(directory, 'Disk Watch.app/Contents/Info.plist')), true)
 })

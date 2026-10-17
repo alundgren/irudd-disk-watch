@@ -10,6 +10,8 @@ asar: true
 npmRebuild: false
 win:
   extraResources:
+    - from: scripts/install-windows.ps1
+      to: install-windows.ps1
     - from: scanner/target/release/dw-scan.exe
       to: dw-scan.exe
     - from: build/icon.ico
@@ -47,3 +49,5 @@ mac:
       to: dw-scan
     - from: build/icon.png
       to: icon.png
+    - from: dist/helpers/install-mac.mjs
+      to: install-mac.mjs

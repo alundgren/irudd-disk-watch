@@ -1,0 +1,86 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  app:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: voidzero-dev/setup-vp@v1.21.1
+        with:
+          version: 1.1.0
+          run-install: false
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - run: vp install --frozen-lockfile
+      - run: vp run typecheck
+      - run: vp run test
+      - run: vp run test:rust
+      - run: vp run test:installers
+      - name: Package Mac app
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = arm64
+          vp run dist:mac
+          node scripts/check-bundled-helper.mjs
+          tar -C dist/mac-arm64 -czf dist/Disk-Watch-mac-arm64.tar.gz 'Disk Watch.app'
+      - name: Package Windows app and validate on hosted desktop
+        if: runner.os == 'Windows'
+        run: |
+          vp run dist:win
+          vp run verify:packaged
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-installer.ps1
+      - name: Full packaged update and restart on isolated hosted desktop
+        run: |
+          vp exec node scripts/build-updater-smoke.mjs
+          vp exec node scripts/verify-update.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-${{ runner.os }}
+          path: |
+            dist/Disk-Watch-mac-arm64.tar.gz
+            dist/Disk-Watch-*-x64-Setup.exe
+          if-no-files-found: error
+  worker:
+    uses: ./.github/workflows/workers.yml
+  publish:
+    needs: [app, worker]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Validate exact asset set and write SHA256SUMS
+        run: node scripts/release-manifest.mjs release
+      - name: Publish immutable release without overwriting an existing tag release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A failed API read is not treated as permission to overwrite anything.
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name')
+          if printf '%s\n' "$existing" | grep -Fxq "$GITHUB_REF_NAME"; then echo 'Release already exists; refusing to overwrite'; exit 1; fi
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --draft --title "Disk Watch $GITHUB_REF_NAME" --generate-notes
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort > /tmp/actual-assets
+          find release -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/expected-assets
+          diff -u /tmp/expected-assets /tmp/actual-assets
+          gh release edit "$GITHUB_REF_NAME" --draft=false
