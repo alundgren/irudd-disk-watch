@@ -1,3 +1,6 @@
+import type { AppUpdateApi } from './updates'
+import type { GitHubAccessApi } from './githubAccess'
+
 export type TargetOS = 'windows' | 'macos' | 'linux'
 
 export interface Machine {
@@ -8,6 +11,12 @@ export interface Machine {
   destination?: string
   workerId?: string
   account?: string
+}
+
+export interface RemoteInstallResult {
+  version: string
+  changed: boolean
+  message: string
 }
 
 export interface WorkerInfo {
@@ -110,6 +119,7 @@ export interface Disk {
   machine?: Machine
   targetOS?: TargetOS
   nativeRoot?: NativeRoot | null
+  scanIncluded?: boolean
   cleanupEnabled?: boolean
   excludeRules?: PathRule[]
   id: number
@@ -271,7 +281,7 @@ export interface DeleteResult {
   failed: DeleteFailure[]
 }
 
-/** One click scans every tracked disk in turn. `index` counts from 0. */
+/** One click scans each selected live root in turn. `index` counts from 0. */
 export type ScanProgress = { diskId: number; index: number; count: number } & (
   | { phase: 'starting' }
   | { phase: 'reading'; files: number; dirs: number; bytes: number }
@@ -284,6 +294,9 @@ export type ScanEvent =
   | { type: 'run-finished' }
 
 export interface DiskWatchApi {
+  githubAccess: GitHubAccessApi
+  updates: AppUpdateApi
+  installSshScanner(destination: string): Promise<RemoteInstallResult>
   discoverVolumes(destination?: string): Promise<VolumeDiscovery & { machine: Machine }>
   addVolume(machineId: string, volume: NativeVolume): Promise<Disk>
   addFolder(machineId: string, path: string): Promise<Disk>
@@ -297,6 +310,7 @@ export interface DiskWatchApi {
   recoverDelete(operationId: string): Promise<DeleteResult>
   listDisks(): Promise<Disk[]>
   removeDisk(diskId: number): Promise<void>
+  setScanIncluded(diskId: number, included: boolean): Promise<void>
   pickExclude(diskId: number, kind: 'file' | 'dir'): Promise<string | null>
   setExcludes(diskId: number, paths: string[]): Promise<void>
   addExclude(diskId: number, path: string): Promise<void>

@@ -4,6 +4,7 @@ import { api, formatBytes, formatCount, formatWhen } from './api'
 import { canTrackVolume, volumeChoices, volumeExplanation } from './volumeChoice'
 import { initialDiscovery, volumeDiscovery } from './volumeDiscovery'
 import { errorText } from './bulkQueue'
+import { RemoteScannerSettings } from './RemoteScannerSettings'
 
 type Source = 'local' | 'ssh'
 interface Props {
@@ -21,10 +22,11 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
   const [folder, setFolder] = useState(false)
   const [path, setPath] = useState('')
   const [adding, setAdding] = useState(false)
+  const [installing, setInstalling] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null)
   const request = useRef(0)
   const active = useRef(true)
-  const busy = loading || adding
+  const busy = loading || adding || installing
 
   const discover = useCallback(async (remote?: string) => {
     const identity = ++request.current
@@ -85,7 +87,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
     }
   }
   const close = () => {
-    if (adding) return
+    if (adding || installing) return
     dispatch({ type: 'invalidate', request: ++request.current })
     onClose()
   }
@@ -105,7 +107,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
       aria-labelledby="volume-title"
       onCancel={(event) => {
         event.preventDefault()
-        if (!adding) close()
+        if (!adding && !installing) close()
       }}
     >
       <header>
@@ -115,12 +117,17 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
           <button
             type="button"
             aria-pressed={source === 'local'}
-            disabled={adding}
+            disabled={adding || installing}
             onClick={() => switchSource('local')}
           >
             This computer
           </button>
-          <button type="button" aria-pressed={source === 'ssh'} disabled={adding} onClick={() => switchSource('ssh')}>
+          <button
+            type="button"
+            aria-pressed={source === 'ssh'}
+            disabled={adding || installing}
+            onClick={() => switchSource('ssh')}
+          >
             Over SSH
           </button>
         </div>
@@ -135,7 +142,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
         >
           <label htmlFor="volume-destination">SSH destination</label>
           <p className="muted small">
-            Use your existing SSH alias or user@host. The native worker must be installed there.
+            Use your existing SSH alias or user@host. Connect if the scanner is installed, or install it below.
           </p>
           <div className="volume-connect-row">
             <input
@@ -158,6 +165,13 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
               {loading ? 'Connecting…' : discovery ? 'Refresh' : 'Connect'}
             </button>
           </div>
+          <RemoteScannerSettings
+            key={destination.trim()}
+            destination={destination}
+            disabled={busy}
+            onInstalled={() => void discover(destination.trim())}
+            onBusyChange={setInstalling}
+          />
         </form>
       )}
       {source === 'local' && (
@@ -271,7 +285,7 @@ export function VolumeChooser({ initialSource, initialDestination, onTracked, on
           </>
         )}
         <footer className="dialog-actions">
-          <button type="button" disabled={adding} onClick={close}>
+          <button type="button" disabled={adding || installing} onClick={close}>
             Cancel
           </button>
           <button

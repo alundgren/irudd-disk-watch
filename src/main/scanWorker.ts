@@ -24,8 +24,12 @@ port.on('message', (message) => {
 
 const store = new Store(openDb(data.dbFile))
 const post = (event: ScanEvent) => port.postMessage(event)
-const count = data.diskIds.length
-for (const [index, diskId] of data.diskIds.entries()) {
+const diskIds = [...new Set(data.diskIds)]
+  .map((diskId) => store.getDisk(diskId))
+  .filter((disk) => disk.machine.kind !== 'historical' && disk.scanIncluded)
+  .map((disk) => disk.id)
+const count = diskIds.length
+for (const [index, diskId] of diskIds.entries()) {
   if (controller.signal.aborted) break
   post({ type: 'progress', progress: { diskId, index, count, phase: 'starting' } })
   const outcome = await runScan({

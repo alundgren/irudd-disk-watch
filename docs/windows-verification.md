@@ -100,7 +100,7 @@ Use an operator-selected legacy test snapshot or create a consistent SQLite back
 
 1. Create separate baseline and candidate profile directories under `$Audit`. Put an independent copy of the closed snapshot at each profile's `disk-watch.db`. Record SHA-256 hashes before application startup.
 2. On copied data, capture original IDs, node parent/name/kind, roots, scans, totals, timestamp nulls, methods/fallbacks, exclusions, hides and revisions. Compare browse trees, totals and Changes results before and after candidate migration. Preserve every existing Windows ID and Windows comparison rule. A migration collision must stop with a useful error, never combine IDs.
-3. Start the candidate with only its explicit temporary profile. Confirm `disk-watch-native.db` appears after successful staged import. The copied legacy `disk-watch.db` must retain its hash, and the operator's original profile must remain unused. Candidate Windows history must retain Windows machine ownership. On Windows startup the imported Windows machine binds to the inspected local Windows worker before the first window appears. Verify Scan all drives is enabled without adding a root again, IDs stay unchanged, and an already bound different worker is refused. The same Windows history opened on Mac must remain historical.
+3. Start the candidate with only its explicit temporary profile. Confirm `disk-watch-native.db` appears after successful staged import. The copied legacy `disk-watch.db` must retain its hash, and the operator's original profile must remain unused. Candidate Windows history must retain Windows machine ownership. On Windows startup the imported Windows machine binds to the inspected local Windows worker before the first window appears. Verify Scan selected is enabled without adding a root again, IDs stay unchanged, and an already bound different worker is refused. The same Windows history opened on Mac must remain historical.
 4. Close and reopen the candidate using the same temporary profile. Confirm it reuses native history. Open the baseline using its own legacy profile and verify its history still works. New native scans do not merge back into the legacy database on downgrade.
 5. Run the existing history tests for committed WAL import, v0/v1/v2/v3 migration, collision/future-version refusal, invalid final preservation, concurrent initialization and interruption before atomic install. Retain each failure result as evidence, not as a successful empty history.
 
@@ -138,7 +138,7 @@ Use Space, Changes, Treemap, hide/exclude editing, Undo, keyboard context menus 
 
 ## Verify packaging and installation without replacement
 
-Inspect the Windows workflow and packaging scripts at the candidate commit, then run the existing Windows GUI verification and packaged verification in the isolated session. Run `ready` only after inspecting its complete command tree and confirming every GUI step uses that session.
+Inspect the release workflow and packaging scripts at the candidate commit, then run the existing Windows GUI verification and packaged verification in the isolated session. Run `ready` only after inspecting its complete command tree and confirming every GUI step uses that session.
 
 Inside the isolated Windows session, run the candidate commands below, checking every exit. These commands launch Electron during verification. Baseline uses `vp run verify` and `vp run verify:packaged`, which are also retained aliases in the candidate.
 
@@ -158,7 +158,7 @@ If testing installer/UAC behavior, use a disposable Windows test account or VM a
 
 ## Report and cleanup
 
-Check the final integration PR's latest Windows CI results after all fixes land. A child branch check or an earlier successful run does not establish the final candidate. Report each gate as passed, failed or pending with its exact command, commit, method and evidence location. Include original Windows suite results, elevated CLI and app MFT results, baseline/candidate performance, junction/lock/read-only outcomes, import preservation, UAC profile continuity, static CRT and NSIS/package evidence. State explicitly when native memory, symbolic-link policy, GUI isolation or actual elevated execution was unavailable. Any required pending gate keeps Windows release approval pending.
+Run the Windows development checks against the final integration commit after all fixes land. A child branch check or an earlier successful run does not establish the final candidate. Report each gate as passed, failed or pending with its exact command, commit, method and evidence location. Include original Windows suite results, elevated CLI and app MFT results, baseline/candidate performance, junction/lock/read-only outcomes, import preservation, UAC profile continuity, static CRT and NSIS/package evidence. State explicitly when native memory, symbolic-link policy, GUI isolation or actual elevated execution was unavailable. Any required pending gate keeps Windows release approval pending.
 
 Review reports and screenshots for private hostnames, accounts, paths and file content before publishing. Keep raw profiles and representative measurements in the private audit directory. Remove the two worktrees through `git worktree remove` only after their test-owned processes have exited and required artifacts have been saved. Clean up only named directories and installations created by this run. The representative root and the original application/profile remain outside cleanup.
 
@@ -175,4 +175,4 @@ A completion report should include this table and link to private evidence. Do n
 | Junction, link, locked/read-only deletion fixtures and sentinels | | |
 | Copied legacy import, IDs/rules/queries, source hashes and reopen | | |
 | GUI, bundled scanner, NSIS and static CRT | | |
-| Latest final-integration Windows CI | | |
+| Final integration Windows development checks | | |

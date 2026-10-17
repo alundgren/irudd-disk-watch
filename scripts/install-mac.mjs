@@ -1,10 +1,20 @@
 import { spawnSync } from 'node:child_process'
-import { accessSync, constants, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'node:fs'
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { signAsync } from '@electron/osx-sign'
 
-const root = fileURLToPath(new URL('../', import.meta.url))
+const root = resolve(fileURLToPath(import.meta.url), '../..')
 const appName = 'Disk Watch.app'
 const bundleId = 'com.irudd.diskwatch'
 const executable = join('Contents', 'MacOS', 'Disk Watch')
@@ -100,83 +110,114 @@ export function installedSigningIdentity(path) {
 export async function installBundle(source, directory, { register = true, signingIdentity } = {}) {
   if (process.platform !== 'darwin') throw new Error('The Mac installer requires macOS.')
   if (!isAbsolute(directory)) throw new Error('The install directory must be absolute.')
+  // Refuse linked parent directories instead of silently changing the install destination.
+  let parent = resolve(directory)
+  while (parent !== '/') {
+    const stat = exists(parent)
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`Unsafe install directory: ${parent}`)
+    parent = resolve(parent, '..')
+  }
   source = realpathSync(source)
   validateBundle(source)
   mkdirSync(directory, { recursive: true })
   directory = realpathSync(directory)
   accessSync(directory, constants.W_OK)
   const target = join(directory, appName)
-  if (source === target || source.startsWith(`${target}/`))
-    throw new Error('The source must be outside the installed app.')
-  if (exists(target)) validateBundle(target)
-  assertStopped(target)
-  const requested = signingIdentity ?? installedSigningIdentity(target)
-  const identity =
-    requested === undefined
-      ? undefined
-      : selectSigningIdentity(run('/usr/bin/security', ['find-identity', '-p', 'codesigning'], true), requested)
-  const staging = mkdtempSync(join(directory, '.disk-watch-install-'))
-  const candidate = join(staging, appName)
-  const previous = join(staging, 'previous.app')
-  let movedPrevious = false
-  let installed = false
+  const lock = join(directory, '.disk-watch-install.lock')
   try {
-    run('/usr/bin/ditto', [source, candidate])
-    validateBundle(candidate)
-    if (identity) {
-      const plist = join(candidate, 'Contents/Info.plist')
-      const metadata = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], true))
-      run('/usr/bin/plutil', [
-        metadata[signingKey] === undefined ? '-insert' : '-replace',
-        signingKey,
-        '-string',
-        identity,
-        plist,
-      ])
-      await signAsync({
-        app: candidate,
-        identity,
-        identityValidation: false,
-        gatekeeperAssess: false,
-        preAutoEntitlements: false,
-        preEmbedProvisioningProfile: false,
-        optionsForFile: (file) => ({
-          hardenedRuntime: false,
-          timestamp: 'none',
-          entitlements: [],
-          additionalArguments:
-            file === join(candidate, 'Contents/Resources/dw-scan') ? ['--identifier', `${bundleId}.scanner`] : [],
-        }),
-      })
-      verifySigner(candidate, identity)
-    }
+    mkdirSync(lock, { mode: 0o700 })
+  } catch {
+    throw new Error(`Another install is running, or a previous lock needs inspection: ${lock}`)
+  }
+  try {
+    if (source === target || source.startsWith(`${target}/`))
+      throw new Error('The source must be outside the installed app.')
+    if (exists(target)) validateBundle(target)
     assertStopped(target)
-    if (exists(target)) {
-      validateBundle(target)
-      renameSync(target, previous)
-      movedPrevious = true
-    }
+    const recorded = installedSigningIdentity(target)
+    const requested = signingIdentity ?? recorded
+    const identity =
+      requested === undefined
+        ? undefined
+        : selectSigningIdentity(run('/usr/bin/security', ['find-identity', '-p', 'codesigning'], true), requested)
+    if (recorded && identity !== recorded) throw new Error('The installed signing certificate must be preserved.')
+    const marker = join(directory, '.disk-watch-managed')
+    const markerStat = exists(marker)
+    if (markerStat && (!markerStat.isFile() || markerStat.isSymbolicLink()))
+      throw new Error('Unsafe managed install marker.')
+    writeFileSync(marker, 'com.irudd.diskwatch\n', { mode: 0o600 })
+    const staging = mkdtempSync(join(directory, '.disk-watch-install-'))
+    const candidate = join(staging, appName)
+    const previous = join(staging, 'previous.app')
+    let installed = false
     try {
-      renameSync(candidate, target)
-      installed = true
-    } catch (error) {
-      if (movedPrevious) {
-        renameSync(previous, target)
-        movedPrevious = false
+      run('/usr/bin/ditto', [source, candidate])
+      validateBundle(candidate)
+      if (identity) {
+        const plist = join(candidate, 'Contents/Info.plist')
+        const metadata = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], true))
+        run('/usr/bin/plutil', [
+          metadata[signingKey] === undefined ? '-insert' : '-replace',
+          signingKey,
+          '-string',
+          identity,
+          plist,
+        ])
+        await signAsync({
+          app: candidate,
+          identity,
+          identityValidation: false,
+          gatekeeperAssess: false,
+          preAutoEntitlements: false,
+          preEmbedProvisioningProfile: false,
+          optionsForFile: (file) => ({
+            hardenedRuntime: false,
+            timestamp: 'none',
+            entitlements: [],
+            additionalArguments:
+              file === join(candidate, 'Contents/Resources/dw-scan') ? ['--identifier', `${bundleId}.scanner`] : [],
+          }),
+        })
+        verifySigner(candidate, identity)
       }
-      throw error
+      assertStopped(target)
+      await replaceBundle(candidate, target, previous, validateBundle, renameSync, () => {
+        if (identity) verifySigner(target, identity)
+        if (register) {
+          run(registrationTool, ['-f', target])
+          run('/usr/bin/mdimport', ['-i', target])
+        }
+      })
+      installed = true
+    } finally {
+      // Retain the old app if restoring it failed, so a failed update cannot erase it.
+      if (installed || !exists(previous)) rmSync(staging, { recursive: true, force: true })
+      else console.error(`The previous app is preserved at ${previous}`)
     }
+    if (identity) console.log(`Signed with certificate: ${identity}`)
+    return target
   } finally {
-    // Retain the old app if restoring it failed, so a failed update cannot erase it.
-    if (installed || !movedPrevious) rmSync(staging, { recursive: true, force: true })
-    else console.error(`The previous app is preserved at ${previous}`)
+    rmSync(lock, { recursive: true, force: true })
   }
-  if (register) {
-    run(registrationTool, ['-f', target])
-    run('/usr/bin/mdimport', ['-i', target])
+}
+
+export async function replaceBundle(candidate, target, previous, validate, rename = renameSync, finalize = () => {}) {
+  let backedUp = false
+  if (exists(target)) {
+    validate(target)
+    rename(target, previous)
+    backedUp = true
   }
-  if (identity) console.log(`Signed with certificate: ${identity}`)
-  return target
+  try {
+    rename(candidate, target)
+    validate(target)
+    finalize()
+  } catch (error) {
+    // The candidate can have arrived before a final verification fails.
+    if (exists(target)) rmSync(target, { recursive: true, force: true })
+    if (backedUp) rename(previous, target)
+    throw error
+  }
 }
 
 async function main() {
@@ -185,8 +226,10 @@ async function main() {
   let directory = '/Applications'
   let source = join(root, 'dist/mac-arm64', appName)
   let skipBuild = false
+  let register = true
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--skip-build') skipBuild = true
+    else if (args[i] === '--no-register') register = false
     else if (args[i] === '--install-directory' || args[i] === '--source') {
       const option = args[i]
       const value = args[++i]
@@ -217,9 +260,10 @@ async function main() {
     ])
     run(join(root, 'node_modules/.bin/electron-vite'), ['build'])
     run(process.execPath, [join(root, 'scripts/mac-icon.mjs')])
+    run(process.execPath, [join(root, 'scripts/build-install-helper.mjs')])
     run(join(root, 'node_modules/.bin/electron-builder'), ['--mac', 'dir', '--arm64', '--publish', 'never'])
   }
-  const target = await installBundle(source, directory, { signingIdentity })
+  const target = await installBundle(source, directory, { signingIdentity, register })
   console.log(`Installed: ${target}`)
   console.log('Search Spotlight for Disk Watch. The installer does not launch the app.')
   console.log('Existing scans and settings remain in your disk-watch Application Support folder.')
@@ -230,7 +274,11 @@ async function main() {
   )
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  exists(process.argv[1]) &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
   main().catch((error) => {
     console.error(error.message)
     process.exitCode = 1

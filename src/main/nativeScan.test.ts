@@ -1,7 +1,16 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, test as platformTest } from 'vite-plus/test'
+import { afterEach, expect, test as platformTest, vi } from 'vite-plus/test'
 import { Store, openDb } from './store'
 import { runScan, executeNativeDelete, recoverNativeDelete } from './scan'
 import { LINUX_WORKER_UPDATE, workerOperation, type WorkerConnection } from './worker'
@@ -226,6 +235,59 @@ createInterface({ input: process.stdin }).once('line', (line) => {
     expect(f.store.listDeleteOperations(f.disk.id)).toEqual([])
     expect(readFileSync(join(f.root, 'deep/large'))).toHaveLength(20)
   } finally {
+    f.store.db.close()
+  }
+})
+
+test('native deletion expires during the real Linux preflight without sending deletion or retaining an operation', async () => {
+  const f = await fixture()
+  let clock: ReturnType<typeof vi.spyOn> | undefined
+  try {
+    const scanned = await f.scan()
+    const deep = f.store.children(scanned.scanId, f.disk.rootNode).find((row) => row.name === 'deep')!
+    const leaf = f.store.children(scanned.scanId, deep.nodeId).find((row) => row.name === 'large')!
+    f.store.setCleanupEnabled(f.disk.id, true)
+    const received = join(f.directory, 'preflight-received')
+    const scannerExe = join(f.directory, 'preflight-worker')
+    const now = Date.now()
+    f.store.db.prepare('UPDATE scan SET started_at=? WHERE id=?').run(now - 60 * 60 * 1000, scanned.scanId)
+    // The asynchronous hello probe advances the clock past the exact staging deadline.
+    clock = vi.spyOn(Date, 'now').mockImplementation(() => now + (existsSync(received) ? 1 : 0))
+    const staged = f.store.stageDelete(f.disk.id, leaf.nodeId)
+    writeFileSync(
+      scannerExe,
+      `#!${process.execPath}
+import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
+const { workerId: id, account } = ${JSON.stringify(f.connection.machine)};
+const worker = { id, account, os: 'linux', version: 1, capabilities: { scan: true, delete: true, linuxPathTrust: true } };
+createInterface({ input: process.stdin }).once('line', (line) => {
+  const request = JSON.parse(line);
+  appendFileSync(${JSON.stringify(received)}, request.op + '\\n');
+  const send = (record) => process.stdout.write(JSON.stringify(record) + '\\n');
+  send({ t: 'hello', v: 1, requestId: request.requestId, worker });
+  send({ t: 'result', value: worker });
+  process.stdout.end(() => process.exit(0));
+});
+`,
+      { mode: 0o700 },
+    )
+    const failure = executeNativeDelete(
+      f.store,
+      {
+        ...f.connection,
+        machine: { ...f.connection.machine, os: 'linux' },
+        scannerExe,
+      },
+      f.disk.id,
+      [staged],
+    )
+    await expect(failure).rejects.toThrow(/Scan this root again/)
+    expect(readFileSync(received, 'utf8')).toBe('hello\n')
+    expect(f.store.listDeleteOperations(f.disk.id)).toEqual([])
+    expect(readFileSync(join(f.root, 'deep/large'))).toHaveLength(20)
+  } finally {
+    clock?.mockRestore()
     f.store.db.close()
   }
 })

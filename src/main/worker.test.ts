@@ -2,10 +2,22 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, test as platformTest } from 'vite-plus/test'
-import { LINUX_WORKER_UPDATE, sshArguments, workerOperation, WorkerRequestNotSent } from './worker'
+import { LINUX_WORKER_UPDATE, sshArguments, workerEnvironment, workerOperation, WorkerRequestNotSent } from './worker'
 
 const test = process.platform === 'win32' ? platformTest.skip : platformTest
 const owned: string[] = []
+
+platformTest('scanner subprocesses cannot inherit the desktop release token', () => {
+  const previous = process.env.DISK_WATCH_GITHUB_TOKEN
+  try {
+    process.env.DISK_WATCH_GITHUB_TOKEN = 'fixture-private-release-access'
+    expect(workerEnvironment().DISK_WATCH_GITHUB_TOKEN).toBeUndefined()
+    expect(process.env.DISK_WATCH_GITHUB_TOKEN).toBe('fixture-private-release-access')
+  } finally {
+    if (previous === undefined) delete process.env.DISK_WATCH_GITHUB_TOKEN
+    else process.env.DISK_WATCH_GITHUB_TOKEN = previous
+  }
+})
 afterEach(() => {
   for (const directory of owned.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
@@ -88,4 +100,24 @@ platformTest('SSH destination cannot supply shell or SSH options and the command
     'exec "$HOME/.local/share/disk-watch/worker-v1" --worker',
   ])
   expect(sshArguments('fixture-alias')).toContain('StrictHostKeyChecking=yes')
+})
+
+test('the delete guard runs after Linux preflight and an expiry sends no delete request', async () => {
+  const valid = connection('valid')
+  let called = 0
+  const failure = workerOperation(valid, 'delete', {}, undefined, () => {
+    called++
+    expect(readFileSync(join(dirname(valid.scannerExe), 'received'), 'utf8')).toBe('hello\n')
+    throw new Error('Scan this root again before deleting.')
+  })
+  await expect(failure).rejects.toBeInstanceOf(WorkerRequestNotSent)
+  await expect(failure).rejects.toThrow(/Scan this root again/)
+  expect(called).toBe(1)
+  expect(readFileSync(join(dirname(valid.scannerExe), 'received'), 'utf8')).toBe('hello\n')
+  let allowed = 0
+  await workerOperation(valid, 'delete', {}, undefined, () => {
+    allowed++
+  })
+  expect(allowed).toBe(1)
+  expect(readFileSync(join(dirname(valid.scannerExe), 'received'), 'utf8')).toBe('hello\nhello\ndelete\n')
 })

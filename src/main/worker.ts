@@ -17,9 +17,17 @@ export interface WorkerConnection {
   stateDir?: string
 }
 
+export function workerEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env }
+  // SSH may have user-configured SendEnv rules. Release credentials belong only to the desktop downloader.
+  for (const name of Object.keys(environment))
+    if (name.toUpperCase() === 'DISK_WATCH_GITHUB_TOKEN') delete environment[name]
+  return environment
+}
+
 /** Linux workers built before per-folder trust checks refuse most real roots, such as `/`. */
 export const LINUX_WORKER_UPDATE =
-  'The Linux worker on this machine is out of date, so deletion is unavailable. Update the worker (see "Update the Linux worker" in the README), then try again.'
+  'The Linux worker on this machine is out of date, so deletion is unavailable. Open Settings for this root, choose Install or update scanner, then scan again.'
 
 /**
  * The worker never received the request, so nothing on disk changed. Callers that record an
@@ -87,12 +95,17 @@ export function workerCommand(connection: WorkerConnection): { executable: strin
 const cleanupMutation = (op: WorkerOperation, parameters: Record<string, unknown>) =>
   op === 'delete' || (op === 'cleanup' && parameters.enabled === true)
 
-/** One owned subprocess per operation. Stdin remains a live control channel. */
+/**
+ * One owned subprocess per operation. Stdin remains a live control channel.
+ * beforeSend runs synchronously after any asynchronous preflight, just before writing the request.
+ * A rejected guard is reported as WorkerRequestNotSent, so callers can discard pending operations.
+ */
 export async function* workerFrames(
   connection: WorkerConnection,
   op: WorkerOperation,
   parameters: Record<string, unknown> = {},
   signal?: AbortSignal,
+  beforeSend?: () => void,
 ): AsyncGenerator<Exclude<WorkerFrame, { t: 'hello' }>> {
   if (signal?.aborted) throw new Error('Cancelled')
   const { machine } = connection
@@ -121,6 +134,7 @@ export async function* workerFrames(
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     shell: false,
+    env: workerEnvironment(),
   })
   let diagnostic = Buffer.alloc(0)
   let inputError: Error | undefined
@@ -155,6 +169,11 @@ export async function* workerFrames(
   let sawHello = false
   let terminal = false
   try {
+    try {
+      beforeSend?.()
+    } catch (error) {
+      throw new WorkerRequestNotSent(error instanceof Error ? error.message : String(error))
+    }
     child.stdin.write(request)
     if (signal?.aborted) cancel()
     for await (const line of framedLines(child.stdout)) {
@@ -213,10 +232,11 @@ export async function workerOperation(
   op: Exclude<WorkerOperation, 'scan'>,
   parameters: Record<string, unknown> = {},
   signal?: AbortSignal,
+  beforeSend?: () => void,
 ): Promise<unknown> {
   let result: unknown
   let complete = false
-  for await (const frame of workerFrames(connection, op, parameters, signal)) {
+  for await (const frame of workerFrames(connection, op, parameters, signal, beforeSend)) {
     if (frame.t !== 'result') throw new Error('Unexpected worker operation response.')
     result = frame.value
     complete = true
