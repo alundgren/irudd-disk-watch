@@ -44,3 +44,38 @@ test('PowerShell bootstrap contains the same installer functions as the bundled 
     readFileSync(join(root, 'scripts/bootstrap-windows.ps1'), 'utf8').replaceAll('\r\n', '\n')
   assert.equal(readFileSync(join(root, 'install.ps1'), 'utf8').replaceAll('\r\n', '\n'), expected)
 })
+
+for (const token of [undefined, '', 'optional fixture token']) {
+  test(
+    `Mac bootstrap fetch works in system Bash with ${token === undefined ? 'unset' : token === '' ? 'empty' : 'optional'} credentials`,
+    { skip: process.platform !== 'darwin' },
+    () => {
+      const source = readFileSync(join(root, 'install.sh'), 'utf8')
+      const start = source.indexOf('fetch() {')
+      const end = source.indexOf('\nfetch "', start)
+      assert.ok(start >= 0 && end > start)
+      const helper = source.slice(start, end)
+      const script = `set -euo pipefail
+function /usr/bin/curl { printf '%s\\0' "$@"; }
+${helper}
+fetch 'https://api.github.com/repos/fixture/app/releases/latest' '/tmp/release fixture.json' application/vnd.github+json
+`
+      const env = { ...process.env }
+      delete env.DISK_WATCH_GITHUB_TOKEN
+      if (token !== undefined) env.DISK_WATCH_GITHUB_TOKEN = token
+      const result = spawnSync('/bin/bash', ['-c', script], { env, encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      const args = result.stdout.split('\0').slice(0, -1)
+      assert.ok(args.includes('Accept: application/vnd.github+json'))
+      assert.deepEqual(args.slice(-3), [
+        'https://api.github.com/repos/fixture/app/releases/latest',
+        '-o',
+        '/tmp/release fixture.json',
+      ])
+      assert.deepEqual(
+        args.filter((arg) => arg.startsWith('Authorization:')),
+        token ? [`Authorization: Bearer ${token}`] : [],
+      )
+    },
+  )
+}

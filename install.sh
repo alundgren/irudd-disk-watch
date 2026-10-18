@@ -8,9 +8,9 @@ repo='alundgren/irudd-disk-watch'
 stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/disk-watch-install.XXXXXXXX")
 trap '/bin/rm -rf "$stage"' EXIT
 fetch() {
-  auth=()
-  if [ -n "${DISK_WATCH_GITHUB_TOKEN:-}" ]; then auth=(-H "Authorization: Bearer $DISK_WATCH_GITHUB_TOKEN"); fi
-  /usr/bin/curl "${auth[@]}" -H "Accept: ${3:-application/octet-stream}" --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 --max-filesize 734003200 "$1" -o "$2"
+  set -- -H "Accept: ${3:-application/octet-stream}" --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 --max-filesize 734003200 "$1" -o "$2"
+  if [ -n "${DISK_WATCH_GITHUB_TOKEN:-}" ]; then set -- -H "Authorization: Bearer $DISK_WATCH_GITHUB_TOKEN" "$@"; fi
+  /usr/bin/curl "$@"
 }
 fetch "https://api.github.com/repos/$repo/releases/latest" "$stage/release.json" application/vnd.github+json
 # plutil reads GitHub JSON without requiring Python, jq, Node or a checkout.
