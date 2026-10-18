@@ -234,12 +234,13 @@ it('keeps an anonymous download anonymous when credentials change during the ope
   expect(fetcher.mock.calls.every(([, options]) => options.headers.Authorization === undefined)).toBe(true)
 })
 
-it('explains missing releases and the GitHub access setting for an anonymous 404', async () => {
-  setReleaseTokenProvider(() => undefined)
+it.each([undefined, 'optional-token'])('explains an unpublished release on HTTP 404 with token %s', async (token) => {
+  setReleaseTokenProvider(() => token)
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => new Response(null, { status: 404 })),
   )
-  await expect(getRelease()).rejects.toThrow('A release may not exist yet.')
-  await expect(getRelease()).rejects.toThrow('App updates > GitHub access')
+  await expect(getRelease()).rejects.toThrow(
+    'Release download failed: HTTP 404. The requested release or asset may not be published yet.',
+  )
 })

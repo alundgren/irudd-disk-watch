@@ -68,7 +68,7 @@ async function fetchBytes(url: string, limit: number, token: string | undefined)
     if (!response.ok) {
       await response.body?.cancel()
       throw new Error(
-        `Release download failed: HTTP ${response.status}.${response.status === 404 && !token ? ' A release may not exist yet. For private repository access, save a token with contents read access in App updates > GitHub access.' : ''}`,
+        `Release download failed: HTTP ${response.status}.${response.status === 404 ? ' The requested release or asset may not be published yet.' : ''}`,
       )
     }
     const length = response.headers.get('content-length')

@@ -26,9 +26,8 @@ export function GitHubAccessSettings({ onChanged }: { onChanged(): void }) {
     <section aria-labelledby="github-access-heading" aria-busy={busy}>
       <h2 id="github-access-heading">GitHub access</h2>
       <p>
-        Downloads from this private repository need a GitHub token with Contents read access to
-        alundgren/irudd-disk-watch. Save it once on this computer. The OS encrypts it for later app and SSH scanner
-        updates.
+        App updates and SSH scanner downloads work without a GitHub token. If you reach GitHub's API rate limit, you can
+        optionally save a token here. The OS encrypts it on this computer.
       </p>
       {state?.source === 'saved' && <p role="status">GitHub access is saved on this computer.</p>}
       {state?.source === 'environment' && <p role="status">Using GitHub access from the launch environment.</p>}

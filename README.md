@@ -6,21 +6,21 @@ You choose which drives or folders to track. One click scans the selected roots.
 
 ## Install it
 
-Install the latest released app without Node, Rust or a source checkout. The initial installer requires this change on main and a published release. This repository is private, so first export `DISK_WATCH_GITHUB_TOKEN` with Contents read access to this repository in the terminal used for installation.
+Install the latest released app without Node, Rust or a source checkout. The repository is public, so no GitHub token is required. The installers require a published stable release.
 
 On an Apple Silicon Mac:
 
 ```sh
-curl -fsSL -H "Authorization: Bearer $DISK_WATCH_GITHUB_TOKEN" https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.sh | bash
 ```
 
 On Windows x64, in PowerShell:
 
 ```powershell
-irm -Headers @{ Authorization = "Bearer $env:DISK_WATCH_GITHUB_TOKEN" } https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/alundgren/irudd-disk-watch/main/install.ps1 | iex
 ```
 
-After installation, open **App updates**, save GitHub access once using the OS-encrypted credential setting, and check for a new release and install it when you are ready to restart. Updates preserve saved scans and settings. See [installation, updates and moving from a hand-installed copy](docs/installing.md) before removing an existing installation. Full Disk Access on a Mac and unsigned-app approval are manual operating-system permissions.
+After installation, open **App updates**, check for a new release and install it when you are ready to restart. App updates and SSH scanner downloads work without a GitHub token. Updates preserve saved scans and settings. See [installation, updates and moving from a hand-installed copy](docs/installing.md) before removing an existing installation. Full Disk Access on a Mac and unsigned-app approval are manual operating-system permissions.
 
 For a Linux scanner, choose **Track over SSH**, enter an existing SSH alias or `user@host`, and choose **Install or update scanner**. The app downloads the scanner matching its own release, verifies it, and installs it over SSH. No daemon or build tools are required on the remote. Existing SSH key authentication and a previously verified host key are required. Remote root Settings has the same install/update action.
 
